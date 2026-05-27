@@ -1,4 +1,4 @@
-# KnowCran
+# Mnemosyne
 
 Local scientific discovery knowledge base using Semantic Scholar.
 

@@ -17,13 +17,20 @@ _MAX_RETRIES = 3
 
 
 class SemanticScholarClient:
-    def __init__(self, api_key: str = S2_API_KEY, rate_limit: float = RATE_LIMIT_SECONDS, raw_dir: Path = RAW_DIR):
+    def __init__(
+        self,
+        api_key: str = S2_API_KEY,
+        rate_limit: float = RATE_LIMIT_SECONDS,
+        raw_dir: Path = RAW_DIR,
+        client: httpx.Client | None = None,
+    ):
         self._api_key = api_key
         self._rate_limit = rate_limit
         self._last_request_time = 0.0
         self._raw_dir = raw_dir
         self._raw_dir.mkdir(parents=True, exist_ok=True)
-        self._client = httpx.Client(timeout=30.0)
+        self._client = client or httpx.Client(timeout=30.0)
+        self._owns_client = client is None
 
     def _headers(self) -> dict[str, str]:
         h = {"Accept": "application/json"}
@@ -121,16 +128,8 @@ class SemanticScholarClient:
             "negativePaperIds": negative_paper_ids or [],
         }
         params = {"limit": limit, "fields": DEFAULT_FIELDS}
-        for attempt in range(_MAX_RETRIES):
-            self._wait_rate_limit()
-            resp = self._client.post(url, headers=self._headers(), json=body, params=params)
-            if resp.status_code == 200:
-                return resp.json().get("recommendedPapers", [])
-            if resp.status_code in _RETRY_STATUS:
-                time.sleep((attempt + 1) * 2)
-                continue
-            resp.raise_for_status()
-        return []
+        data = self._post(url, body=body, params=params)
+        return data.get("recommendedPapers", []) if isinstance(data, dict) else []
 
     def get_recommendations_for_paper(self, paper_id: str, limit: int = 20) -> list[dict[str, Any]]:
         url = f"{S2_BASE_URL}/recommendations/v1/papers/forpaper/{paper_id}"
@@ -138,4 +137,5 @@ class SemanticScholarClient:
         return self._get(url, params).get("recommendedPapers", [])
 
     def close(self) -> None:
-        self._client.close()
+        if self._owns_client:
+            self._client.close()

@@ -25,6 +25,7 @@ dev = [
 
 [project.scripts]
 knowcran = "knowcran.cli:app"
+mnemosyne = "knowcran.cli:app"
 
 [tool.setuptools.packages.find]
 include = ["knowcran*"]

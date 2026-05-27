@@ -69,12 +69,13 @@ def discover(
 
     try:
         queries = generate_queries(question)
-        console.print(f"[bold]Running {len(queries)} queries for: {question}[/bold]")
+        per_query = max(1, limit // len(queries))
+        console.print(f"[bold]Running {len(queries)} queries for: {question} (limit {limit} total)[/bold]")
 
         all_papers: list[dict[str, Any]] = []
         for q in queries:
             console.print(f"  Searching: {q}")
-            results = client.search_bulk(q, limit=limit)
+            results = client.search_bulk(q, limit=per_query)
             for r in results:
                 r["_query"] = q
             all_papers.extend(results)
@@ -82,7 +83,7 @@ def discover(
         deduped = _deduplicate(all_papers)
         console.print(f"  Found {len(all_papers)} raw, {len(deduped)} unique")
 
-        ranked = _rank(deduped, question)
+        ranked = _rank(deduped, question)[:limit]
         for r in ranked:
             r.discovered_by = "keyword_search"
 
@@ -102,40 +103,53 @@ def discover(
 
 def _expand(top_papers: list[PaperRecord], client: SemanticScholarClient, storage: Storage) -> None:
     links: list[PaperLink] = []
-    expanded_papers: list[PaperRecord] = []
+    ref_ids: list[str] = []
+    cite_ids: list[str] = []
     failed_expansions: list[str] = []
 
     for paper in top_papers:
         console.print(f"  Expanding: {paper.title[:60]}...")
 
-        # References
+        # References - collect IDs only
         try:
             detail = client.get_paper(paper.paper_id, fields="references")
             refs = detail.get("references") or []
             for ref in refs[:20]:
                 ref_id = ref.get("paperId")
                 if ref_id:
+                    ref_ids.append(ref_id)
                     links.append(PaperLink(source_paper_id=paper.paper_id, target_paper_id=ref_id, link_type="reference"))
-                    if ref.get("title"):
-                        expanded_papers.append(PaperRecord.from_s2(ref, discovered_by="reference_expansion"))
         except Exception as e:
             msg = f"references for {paper.paper_id}: {e}"
             console.print(f"    [yellow]Warning: failed to fetch {msg}[/yellow]")
             failed_expansions.append(msg)
 
-        # Citations
+        # Citations - collect IDs only
         try:
             detail = client.get_paper(paper.paper_id, fields="citations")
             cites = detail.get("citations") or []
             for cite in cites[:20]:
                 cite_id = cite.get("paperId")
                 if cite_id:
+                    cite_ids.append(cite_id)
                     links.append(PaperLink(source_paper_id=paper.paper_id, target_paper_id=cite_id, link_type="citation"))
-                    if cite.get("title"):
-                        expanded_papers.append(PaperRecord.from_s2(cite, discovered_by="citation_expansion"))
         except Exception as e:
             msg = f"citations for {paper.paper_id}: {e}"
             console.print(f"    [yellow]Warning: failed to fetch {msg}[/yellow]")
+            failed_expansions.append(msg)
+
+    # Batch fetch full metadata for all expansion paper IDs
+    all_expansion_ids = list(set(ref_ids + cite_ids))
+    expansion_papers: list[PaperRecord] = []
+    if all_expansion_ids:
+        try:
+            batch = client.batch_papers(all_expansion_ids)
+            for data in batch:
+                if data and data.get("paperId"):
+                    expansion_papers.append(PaperRecord.from_s2(data, discovered_by="reference_expansion" if data["paperId"] in ref_ids else "citation_expansion"))
+        except Exception as e:
+            msg = f"batch fetch for expansion papers: {e}"
+            console.print(f"    [yellow]Warning: {msg}[/yellow]")
             failed_expansions.append(msg)
 
     # Recommendations
@@ -148,12 +162,12 @@ def _expand(top_papers: list[PaperRecord], client: SemanticScholarClient, storag
                 if rec_id:
                     for sid in seed_ids:
                         links.append(PaperLink(source_paper_id=sid, target_paper_id=rec_id, link_type="recommendation"))
-                    expanded_papers.append(PaperRecord.from_s2(rec, discovered_by="recommendation"))
+                    expansion_papers.append(PaperRecord.from_s2(rec, discovered_by="recommendation"))
         except Exception as e:
             msg = f"recommendations: {e}"
             console.print(f"    [yellow]Warning: failed to fetch {msg}[/yellow]")
             failed_expansions.append(msg)
 
     storage.insert_links(links)
-    storage.upsert_papers(expanded_papers)
-    console.print(f"  Expansion: {len(expanded_papers)} papers, {len(links)} links, {len(failed_expansions)} failures")
+    storage.upsert_papers(expansion_papers)
+    console.print(f"  Expansion: {len(expansion_papers)} papers, {len(links)} links, {len(failed_expansions)} failures")

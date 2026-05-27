@@ -126,14 +126,14 @@ def _extract_claims(paper: dict[str, Any], topic: str | None = None) -> list[Cla
     return claims
 
 
-def read_paper(paper_id: str, storage: Storage | None = None) -> list[Claim]:
+def read_paper(paper_id: str, topic: str | None = None, storage: Storage | None = None) -> list[Claim]:
     own = storage is None
     storage = storage or Storage()
     try:
         paper = storage.get_paper(paper_id)
         if not paper:
             return []
-        topic = paper.get("title", "")
+        topic = topic or paper.get("title", "")
         claims = _extract_claims(paper, topic)
         storage.insert_claims(claims)
         return claims

@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 from datetime import datetime
 from math import log1p
+from typing import Any
 
 
 def slugify(text: str, max_len: int = 80) -> str:
@@ -61,3 +63,28 @@ def generate_queries(question: str) -> list[str]:
         f"{question} review",
         f"{question} clinical",
     ]
+
+
+def paper_note_stem(paper: dict[str, Any]) -> str:
+    return f"{paper.get('year', 'unknown')}_{slugify(paper['title'])}"
+
+
+def citation_key(paper: dict[str, Any]) -> str:
+    authors_str = ""
+    try:
+        authors_list = json.loads(paper.get("authors_json") or "[]")
+        if authors_list:
+            first_author = authors_list[0].get("name", "")
+            # Extract last name (last word before comma or last word)
+            parts = first_author.replace(",", " ").split()
+            authors_str = slugify(parts[-1]) if parts else ""
+    except Exception:
+        pass
+
+    year = paper.get("year") or "nd"
+    title_words = slugify(paper.get("title", "")).split("-")
+    short_title = title_words[0] if title_words else "untitled"
+
+    if authors_str:
+        return f"{authors_str}{year}{short_title}"
+    return f"{year}{short_title}"

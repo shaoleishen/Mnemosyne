@@ -7,7 +7,7 @@ from typing import Any
 
 from knowcran.config import VAULT_DIR
 from knowcran.storage import Storage
-from knowcran.utils import slugify
+from knowcran.utils import paper_note_stem, slugify
 
 
 def _paper_note(paper: dict[str, Any], claims: list[dict[str, Any]], links: list[dict[str, Any]]) -> str:
@@ -72,7 +72,7 @@ tags:
     return yaml + body
 
 
-def _claim_note(claim: dict[str, Any]) -> str:
+def _claim_note(claim: dict[str, Any], paper_note_map: dict[str, str] | None = None) -> str:
     yaml = f"""---
 claim_id: {claim['claim_id']}
 paper_id: {claim['paper_id']}
@@ -84,7 +84,11 @@ tags:
 ---"""
     body = f"\n# {claim['evidence_type'].replace('_', ' ').title()}\n\n"
     body += f"{claim['claim_text']}\n\n"
-    body += f"**Source**: [[{claim['paper_id']}]]\n"
+    if paper_note_map and claim["paper_id"] in paper_note_map:
+        stem = paper_note_map[claim["paper_id"]]
+        body += f"**Source**: [[{stem}]]\n"
+    else:
+        body += f"**Source**: [[{claim['paper_id']}]]\n"
     return yaml + body
 
 
@@ -126,14 +130,17 @@ def export_obsidian(topic: str, storage: Storage | None = None, vault_dir: Path 
         claims_dir.mkdir(parents=True, exist_ok=True)
         topics_dir.mkdir(parents=True, exist_ok=True)
 
+        paper_note_map: dict[str, str] = {}
         for p in papers:
             links = storage.get_links(p["paper_id"])
             paper_claims = [c for c in claims if c["paper_id"] == p["paper_id"]]
-            filename = f"{p.get('year', 'unknown')}_{slugify(p['title'])}.md"
+            stem = paper_note_stem(p)
+            paper_note_map[p["paper_id"]] = stem
+            filename = f"{stem}.md"
             (papers_dir / filename).write_text(_paper_note(p, paper_claims, links))
 
         for c in claims:
-            (claims_dir / f"{c['claim_id']}.md").write_text(_claim_note(c))
+            (claims_dir / f"{c['claim_id']}.md").write_text(_claim_note(c, paper_note_map))
 
         (topics_dir / f"{slugify(topic)}.md").write_text(_topic_note(topic, papers, claims))
 

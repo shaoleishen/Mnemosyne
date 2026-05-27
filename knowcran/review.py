@@ -10,7 +10,7 @@ from typing import Any
 from knowcran.config import VAULT_DIR
 from knowcran.models import EvidenceMatrixRow, ReviewOutput
 from knowcran.storage import Storage
-from knowcran.utils import slugify
+from knowcran.utils import citation_key, slugify
 
 
 def _group_claims(claims: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
@@ -22,6 +22,11 @@ def _group_claims(claims: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]
 
 def _build_review_text(topic: str, papers: list[dict[str, Any]], claims: list[dict[str, Any]]) -> str:
     groups = _group_claims(claims)
+    paper_map = {p["paper_id"]: p for p in papers}
+    keys = {pid: citation_key(p) for pid, p in paper_map.items()}
+
+    def cite(paper_id: str) -> str:
+        return f"[@{keys.get(paper_id, paper_id)}]"
 
     text = f"# Literature Review: {topic}\n\n"
     text += f"Based on analysis of {len(papers)} papers from the KnowCran knowledge base.\n\n"
@@ -30,7 +35,7 @@ def _build_review_text(topic: str, papers: list[dict[str, Any]], claims: list[di
     summaries = groups.get("abstract_summary", [])
     if summaries:
         for s in summaries[:5]:
-            text += f"- {s['claim_text'][:200]} (Paper: {s['paper_id']})\n"
+            text += f"- {s['claim_text'][:200]} {cite(s['paper_id'])}\n"
     else:
         text += "Needs evidence.\n"
     text += "\n"
@@ -39,7 +44,7 @@ def _build_review_text(topic: str, papers: list[dict[str, Any]], claims: list[di
     results = groups.get("result", [])
     if results:
         for r in results[:8]:
-            text += f"- {r['claim_text'][:200]} (Paper: {r['paper_id']})\n"
+            text += f"- {r['claim_text'][:200]} {cite(r['paper_id'])}\n"
     else:
         text += "Needs evidence.\n"
     text += "\n"
@@ -48,7 +53,7 @@ def _build_review_text(topic: str, papers: list[dict[str, Any]], claims: list[di
     methods = groups.get("method", [])
     if methods:
         for m in methods[:5]:
-            text += f"- {m['claim_text'][:200]} (Paper: {m['paper_id']})\n"
+            text += f"- {m['claim_text'][:200]} {cite(m['paper_id'])}\n"
     else:
         text += "Needs evidence.\n"
     text += "\n"
@@ -57,7 +62,7 @@ def _build_review_text(topic: str, papers: list[dict[str, Any]], claims: list[di
     limitations = groups.get("limitation", [])
     if limitations:
         for l in limitations[:5]:
-            text += f"- {l['claim_text'][:200]} (Paper: {l['paper_id']})\n"
+            text += f"- {l['claim_text'][:200]} {cite(l['paper_id'])}\n"
     else:
         text += "Needs evidence.\n"
     text += "\n"
@@ -75,7 +80,8 @@ def _build_review_text(topic: str, papers: list[dict[str, Any]], claims: list[di
     for p in papers:
         doi = p.get("doi", "")
         doi_str = f" DOI: {doi}" if doi else ""
-        text += f"- {p['title']} ({p.get('year', 'N/A')}). {p.get('venue', '')}{doi_str}\n"
+        key = citation_key(p)
+        text += f"- `@{key}`: {p['title']} ({p.get('year', 'N/A')}). {p.get('venue', '')}{doi_str}\n"
 
     return text
 
@@ -108,15 +114,14 @@ def _write_csv(matrix: list[EvidenceMatrixRow]) -> str:
 def _build_bibtex(papers: list[dict[str, Any]]) -> str:
     entries: list[str] = []
     for p in papers:
-        pid = slugify(p.get("paper_id", "unknown"))
+        key = citation_key(p)
         authors = ""
         try:
-            import json
             authors_list = json.loads(p.get("authors_json") or "[]")
             authors = " and ".join(a.get("name", "") for a in authors_list[:5])
         except Exception:
             pass
-        entry = f"""@article{{{pid},
+        entry = f"""@article{{{key},
   title = {{{p.get('title', '')}}},
   author = {{{authors}}},
   year = {{{p.get('year', '')}}},

@@ -13,8 +13,12 @@ _METHOD_TERMS = re.compile(
     r"\b(method|model|cohort|trial|assay|dataset|experiment|sample|analysis|design|randomized|controlled)\b",
     re.IGNORECASE,
 )
-_RESULT_TERMS = re.compile(
-    r"\b(show|demonstrate|associated|increased|decreased|significant|found|observed|suggest|reveal|indicate|correlate)\b",
+_STRONG_RESULT_TERMS = re.compile(
+    r"\b(significant|demonstrate|found|increased|decreased|show)\b",
+    re.IGNORECASE,
+)
+_SUGGESTIVE_RESULT_TERMS = re.compile(
+    r"\b(suggest|indicate|associated|correlate|reveal|observed)\b",
     re.IGNORECASE,
 )
 _LIMITATION_TERMS = re.compile(
@@ -60,15 +64,19 @@ def _extract_claims(paper: dict[str, Any], topic: str | None = None) -> list[Cla
             topic=topic,
         ))
 
-    # result
-    result_sents = [s for s in sentences if _RESULT_TERMS.search(s)]
+    # result - differentiated by evidence strength
+    strong_sents = [s for s in sentences if _STRONG_RESULT_TERMS.search(s)]
+    suggestive_sents = [s for s in sentences if _SUGGESTIVE_RESULT_TERMS.search(s)]
+    result_sents = strong_sents + [s for s in suggestive_sents if s not in strong_sents]
     if result_sents:
+        has_strong = bool(strong_sents)
+        confidence = 0.75 if has_strong else 0.55
         claims.append(Claim(
             claim_id=str(uuid.uuid4()),
             paper_id=paper_id,
             claim_text=" ".join(result_sents[:3]),
             evidence_type="result",
-            confidence=0.7,
+            confidence=confidence,
             source_location="abstract",
             topic=topic,
         ))
@@ -100,7 +108,7 @@ def _extract_claims(paper: dict[str, Any], topic: str | None = None) -> list[Cla
     questions: list[str] = []
     if not method_sents:
         questions.append("What specific methodology was used in this study?")
-    if not result_sents:
+    if not strong_sents and not suggestive_sents:
         questions.append("What were the key findings and effect sizes?")
     if not any("population" in s.lower() or "patient" in s.lower() or "subject" in s.lower() for s in sentences):
         questions.append("What population or cohort was studied?")

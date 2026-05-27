@@ -94,3 +94,19 @@ def test_review_text_has_sections(tmp_path: Path) -> None:
     assert "## Open Questions" in text
     assert "## References" in text
     storage.close()
+
+
+def test_review_scopes_claims_to_selected_papers(tmp_path: Path) -> None:
+    """Regression: max_papers limits papers AND their claims only."""
+    vault_dir = tmp_path / "vault"
+    db_path = tmp_path / "test.sqlite"
+    storage = Storage(db_path=db_path)
+    _seed_review_db(storage)
+
+    # Only 1 paper selected, so only its 2 claims should appear
+    output = review("celiac disease", max_papers=1, storage=storage, vault_dir=vault_dir)
+    assert len(output.paper_ids) == 1
+    assert len(output.evidence_matrix) == 2
+    for row in output.evidence_matrix:
+        assert row.paper_id == output.paper_ids[0]
+    storage.close()

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+from datetime import datetime
 from math import log1p
 
 
@@ -27,7 +28,7 @@ def cache_key(method: str, url: str, body: str = "") -> str:
     return hashlib.sha256(raw.encode()).hexdigest()
 
 
-def relevance_score(title: str, abstract: str, query: str, citation_count: int, year: int | None, has_oa: bool) -> float:
+def relevance_score(title: str, abstract: str, query: str, citation_count: int, year: int | None, has_oa: bool, current_year: int | None = None) -> float:
     query_terms = set(query.lower().split())
     title_lower = title.lower()
     abstract_lower = (abstract or "").lower()
@@ -37,7 +38,7 @@ def relevance_score(title: str, abstract: str, query: str, citation_count: int, 
 
     citation_score = log1p(citation_count or 0) / 10.0
 
-    current_year = 2026
+    current_year = current_year or datetime.now().year
     recency = max(0, min(1, ((year or 2020) - 2000) / (current_year - 2000)))
 
     oa_bonus = 0.1 if has_oa else 0.0

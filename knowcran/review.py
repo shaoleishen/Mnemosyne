@@ -144,7 +144,11 @@ def review(topic: str, max_papers: int = 20, storage: Storage | None = None, vau
     storage = storage or Storage()
     try:
         papers = storage.get_papers_by_topic(topic, limit=max_papers)
-        claims = storage.get_claims_by_topic(topic)
+        selected_paper_ids = {p["paper_id"] for p in papers}
+        claims = [
+            c for c in storage.get_claims_by_topic(topic)
+            if c["paper_id"] in selected_paper_ids
+        ]
         paper_ids = [p["paper_id"] for p in papers]
 
         review_text = _build_review_text(topic, papers, claims)

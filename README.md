@@ -1,5 +1,7 @@
 # Mnemosyne
 
+**Status: Alpha (v0.1.0-alpha)**
+
 Local scientific discovery knowledge base using Semantic Scholar.
 
 ## Why Not Edison?
@@ -71,9 +73,11 @@ Each paper gets a note with YAML frontmatter (paper_id, year, venue, tags) and s
 
 ## Current Limitations
 
-- **Abstract-only reading**: Claims are extracted from abstracts only; full-text PDF ingestion is not yet supported.
-- **Semantic Scholar rate limits**: 1 req/sec with API key, lower without. Large searches take time.
+- **Abstract-only reading**: Claims are extracted from abstracts only. Full-text PDF ingestion is not yet supported. Abstract-only reading may miss study limitations and full methods.
+- **Semantic Scholar rate limits**: 1 req/sec with API key, lower without. Large searches take time. API client is rate-limited and cached.
 - **No LLM extraction**: v1 uses deterministic sentence matching for claim extraction.
+- **Review output quality**: The current review output is an evidence digest, not a polished narrative review. Review output is traceable but not yet high-quality academic prose.
+- **Metadata completeness**: Semantic Scholar metadata can be incomplete. PubMed, Crossref, and OpenAlex should be added later for metadata repair.
 
 ## Next Steps
 

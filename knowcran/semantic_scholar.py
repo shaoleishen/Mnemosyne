@@ -58,16 +58,17 @@ class SemanticScholarClient:
         resp.raise_for_status()  # type: ignore[union-attr]
         return {}
 
-    def _post(self, url: str, body: dict[str, Any]) -> dict[str, Any]:
+    def _post(self, url: str, body: dict[str, Any], params: dict[str, Any] | None = None) -> Any:
         body_str = json.dumps(body, sort_keys=True)
-        key = cache_key("POST", url, body_str)
+        cache_input = body_str + json.dumps(params or {}, sort_keys=True)
+        key = cache_key("POST", url, cache_input)
         cache_file = self._raw_dir / f"{key}.json"
         if cache_file.exists():
             return json.loads(cache_file.read_text())
 
         for attempt in range(_MAX_RETRIES):
             self._wait_rate_limit()
-            resp = self._client.post(url, headers=self._headers(), json=body)
+            resp = self._client.post(url, headers=self._headers(), json=body, params=params)
             if resp.status_code == 200:
                 data = resp.json()
                 cache_file.write_text(json.dumps(data, indent=2))
@@ -102,10 +103,10 @@ class SemanticScholarClient:
 
     def batch_papers(self, paper_ids: list[str], fields: str = DEFAULT_FIELDS) -> list[dict[str, Any]]:
         url = f"{S2_BASE_URL}/graph/v1/paper/batch"
+        params = {"fields": fields}
         body = {"ids": paper_ids}
-        data = self._post(url, body)
-        result = self._get(url + f"?fields={fields}")
-        return result if isinstance(result, list) else []
+        data = self._post(url, body=body, params=params)
+        return data if isinstance(data, list) else []
 
     def get_recommendations(
         self,
@@ -114,7 +115,7 @@ class SemanticScholarClient:
         negative_paper_ids: list[str] | None = None,
         limit: int = 20,
     ) -> list[dict[str, Any]]:
-        url = f"{S2_BASE_URL}/recommendations/v1/papers/forpaper"
+        url = f"{S2_BASE_URL}/recommendations/v1/papers"
         body: dict[str, Any] = {
             "positivePaperIds": seed_paper_ids + (positive_paper_ids or []),
             "negativePaperIds": negative_paper_ids or [],

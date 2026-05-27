@@ -52,3 +52,45 @@ def test_dedup_distinct_papers() -> None:
     ]
     result = _deduplicate(papers)
     assert len(result) == 2
+
+
+def test_dedup_same_normalized_title_missing_ids() -> None:
+    from knowcran.discovery import _deduplicate
+    papers = [
+        {"paperId": "x1", "title": "Celiac Disease: A Review!", "externalIds": {}},
+        {"paperId": "x2", "title": "Celiac Disease - A Review", "externalIds": {}},
+    ]
+    result = _deduplicate(papers)
+    assert len(result) == 1
+
+
+def test_dedup_doi_case_normalization() -> None:
+    from knowcran.discovery import _deduplicate
+    papers = [
+        {"paperId": "a", "title": "Paper A", "externalIds": {"DOI": "10.1000/ABC"}},
+        {"paperId": "b", "title": "Paper B", "externalIds": {"DOI": "10.1000/abc"}},
+    ]
+    result = _deduplicate(papers)
+    assert len(result) == 1
+
+
+def test_dedup_same_pmid_missing_doi() -> None:
+    from knowcran.discovery import _deduplicate
+    papers = [
+        {"paperId": "a", "title": "Paper A", "externalIds": {"PubMed": "12345"}},
+        {"paperId": "b", "title": "Paper B", "externalIds": {"PubMed": "12345"}},
+    ]
+    result = _deduplicate(papers)
+    assert len(result) == 1
+
+
+def test_dedup_alias_overlap_across_fields() -> None:
+    """Two papers with different IDs but overlapping DOI are deduplicated."""
+    from knowcran.discovery import _deduplicate
+    papers = [
+        {"paperId": "id-1", "title": "Alpha Study", "externalIds": {"DOI": "10.9999/same"}},
+        {"paperId": "id-2", "title": "Beta Study", "externalIds": {"DOI": "10.9999/same"}},
+        {"paperId": "id-3", "title": "Gamma Study", "externalIds": {"DOI": "10.9999/other"}},
+    ]
+    result = _deduplicate(papers)
+    assert len(result) == 2

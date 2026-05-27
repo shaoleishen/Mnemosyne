@@ -3,18 +3,12 @@
 from __future__ import annotations
 
 import os
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from dotenv import load_dotenv
 
 load_dotenv()
-
-DATA_DIR = Path(os.getenv("KNOWCRAN_DATA_DIR", "data"))
-VAULT_DIR = Path(os.getenv("KNOWCRAN_VAULT_DIR", "vault"))
-RAW_DIR = DATA_DIR / "raw" / "semantic_scholar"
-DB_PATH = DATA_DIR / "knowcran.sqlite"
-RATE_LIMIT_SECONDS = float(os.getenv("KNOWCRAN_RATE_LIMIT_SECONDS", "1.1"))
-S2_API_KEY = os.getenv("SEMANTIC_SCHOLAR_API_KEY", "")
 
 S2_BASE_URL = "https://api.semanticscholar.org"
 
@@ -34,3 +28,33 @@ DISCOVERY_QUERIES = [
     "{q} review",
     "{q} clinical",
 ]
+
+
+@dataclass
+class Settings:
+    data_dir: Path = field(default_factory=lambda: Path(os.getenv("KNOWCRAN_DATA_DIR", "data")))
+    vault_dir: Path = field(default_factory=lambda: Path(os.getenv("KNOWCRAN_VAULT_DIR", "vault")))
+    rate_limit_seconds: float = field(default_factory=lambda: float(os.getenv("KNOWCRAN_RATE_LIMIT_SECONDS", "1.1")))
+    s2_api_key: str = field(default_factory=lambda: os.getenv("SEMANTIC_SCHOLAR_API_KEY", ""))
+
+    @property
+    def raw_dir(self) -> Path:
+        return self.data_dir / "raw" / "semantic_scholar"
+
+    @property
+    def db_path(self) -> Path:
+        return self.data_dir / "knowcran.sqlite"
+
+    @classmethod
+    def from_env(cls) -> Settings:
+        return cls()
+
+
+# Module-level defaults for backward compatibility
+_default = Settings()
+DATA_DIR = _default.data_dir
+VAULT_DIR = _default.vault_dir
+RAW_DIR = _default.raw_dir
+DB_PATH = _default.db_path
+RATE_LIMIT_SECONDS = _default.rate_limit_seconds
+S2_API_KEY = _default.s2_api_key

@@ -95,3 +95,39 @@ def test_paper_note_has_sections(tmp_path: Path) -> None:
     assert "## Key Claims" in content
     assert "## Limitations" in content
     storage.close()
+
+
+def test_paper_notes_only_contain_own_claims(tmp_path: Path) -> None:
+    """Regression: each paper note must contain only claims from that paper."""
+    vault_dir = tmp_path / "vault"
+    db_path = tmp_path / "test.sqlite"
+    storage = Storage(db_path=db_path)
+
+    storage.upsert_paper(PaperRecord(
+        paper_id="p1", title="Paper One Celiac", abstract="Abstract one.", year=2023, discovered_by="keyword_search",
+    ))
+    storage.upsert_paper(PaperRecord(
+        paper_id="p2", title="Paper Two Celiac", abstract="Abstract two.", year=2024, discovered_by="keyword_search",
+    ))
+    storage.insert_claim(Claim(
+        claim_id="c1", paper_id="p1", claim_text="Claim from paper one", evidence_type="result", confidence=0.8, topic="celiac",
+    ))
+    storage.insert_claim(Claim(
+        claim_id="c2", paper_id="p2", claim_text="Claim from paper two", evidence_type="result", confidence=0.7, topic="celiac",
+    ))
+
+    export_obsidian("celiac", storage=storage, vault_dir=vault_dir)
+
+    paper_files = sorted((vault_dir / "papers").glob("*.md"))
+    assert len(paper_files) == 2
+
+    for pf in paper_files:
+        content = pf.read_text()
+        if "Paper One" in content:
+            assert "Claim from paper one" in content
+            assert "Claim from paper two" not in content
+        else:
+            assert "Claim from paper two" in content
+            assert "Claim from paper one" not in content
+
+    storage.close()

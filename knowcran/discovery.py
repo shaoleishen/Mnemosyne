@@ -14,22 +14,31 @@ from knowcran.utils import generate_queries, normalize_title, relevance_score
 console = Console()
 
 
-def _dedup_key(paper: dict[str, Any]) -> str:
+def _dedup_aliases(paper: dict[str, Any]) -> set[str]:
+    aliases: set[str] = set()
     ext = paper.get("externalIds") or {}
-    doi = ext.get("DOI")
-    pmid = ext.get("PubMed")
     pid = paper.get("paperId")
+    if pid:
+        aliases.add(f"pid:{pid}")
+    doi = ext.get("DOI")
+    if doi:
+        aliases.add(f"doi:{doi.lower()}")
+    pmid = ext.get("PubMed")
+    if pmid:
+        aliases.add(f"pmid:{pmid}")
     title = normalize_title(paper.get("title", ""))
-    return doi or pmid or pid or title
+    if title:
+        aliases.add(f"title:{title}")
+    return aliases
 
 
 def _deduplicate(raw_papers: list[dict[str, Any]]) -> list[dict[str, Any]]:
     seen: set[str] = set()
     result: list[dict[str, Any]] = []
     for p in raw_papers:
-        key = _dedup_key(p)
-        if key and key not in seen:
-            seen.add(key)
+        aliases = _dedup_aliases(p)
+        if aliases and not aliases & seen:
+            seen.update(aliases)
             result.append(p)
     return result
 
@@ -94,6 +103,7 @@ def discover(
 def _expand(top_papers: list[PaperRecord], client: SemanticScholarClient, storage: Storage) -> None:
     links: list[PaperLink] = []
     expanded_papers: list[PaperRecord] = []
+    failed_expansions: list[str] = []
 
     for paper in top_papers:
         console.print(f"  Expanding: {paper.title[:60]}...")
@@ -108,8 +118,10 @@ def _expand(top_papers: list[PaperRecord], client: SemanticScholarClient, storag
                     links.append(PaperLink(source_paper_id=paper.paper_id, target_paper_id=ref_id, link_type="reference"))
                     if ref.get("title"):
                         expanded_papers.append(PaperRecord.from_s2(ref, discovered_by="reference_expansion"))
-        except Exception:
-            pass
+        except Exception as e:
+            msg = f"references for {paper.paper_id}: {e}"
+            console.print(f"    [yellow]Warning: failed to fetch {msg}[/yellow]")
+            failed_expansions.append(msg)
 
         # Citations
         try:
@@ -121,8 +133,10 @@ def _expand(top_papers: list[PaperRecord], client: SemanticScholarClient, storag
                     links.append(PaperLink(source_paper_id=paper.paper_id, target_paper_id=cite_id, link_type="citation"))
                     if cite.get("title"):
                         expanded_papers.append(PaperRecord.from_s2(cite, discovered_by="citation_expansion"))
-        except Exception:
-            pass
+        except Exception as e:
+            msg = f"citations for {paper.paper_id}: {e}"
+            console.print(f"    [yellow]Warning: failed to fetch {msg}[/yellow]")
+            failed_expansions.append(msg)
 
     # Recommendations
     seed_ids = [p.paper_id for p in top_papers[:5]]
@@ -135,9 +149,11 @@ def _expand(top_papers: list[PaperRecord], client: SemanticScholarClient, storag
                     for sid in seed_ids:
                         links.append(PaperLink(source_paper_id=sid, target_paper_id=rec_id, link_type="recommendation"))
                     expanded_papers.append(PaperRecord.from_s2(rec, discovered_by="recommendation"))
-        except Exception:
-            pass
+        except Exception as e:
+            msg = f"recommendations: {e}"
+            console.print(f"    [yellow]Warning: failed to fetch {msg}[/yellow]")
+            failed_expansions.append(msg)
 
     storage.insert_links(links)
     storage.upsert_papers(expanded_papers)
-    console.print(f"  Expansion: {len(expanded_papers)} papers, {len(links)} links")
+    console.print(f"  Expansion: {len(expanded_papers)} papers, {len(links)} links, {len(failed_expansions)} failures")

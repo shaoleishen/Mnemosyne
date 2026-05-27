@@ -128,8 +128,9 @@ def export_obsidian(topic: str, storage: Storage | None = None, vault_dir: Path 
 
         for p in papers:
             links = storage.get_links(p["paper_id"])
+            paper_claims = [c for c in claims if c["paper_id"] == p["paper_id"]]
             filename = f"{p.get('year', 'unknown')}_{slugify(p['title'])}.md"
-            (papers_dir / filename).write_text(_paper_note(p, claims, links))
+            (papers_dir / filename).write_text(_paper_note(p, paper_claims, links))
 
         for c in claims:
             (claims_dir / f"{c['claim_id']}.md").write_text(_claim_note(c))

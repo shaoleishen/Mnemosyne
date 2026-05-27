@@ -28,12 +28,12 @@ tags:
 
     body = f"\n# {paper['title']}\n\n"
     body += "## Metadata\n\n"
-    body += f"- **Year**: {paper.get('year', 'N/A')}\n"
-    body += f"- **Venue**: {paper.get('venue', 'N/A')}\n"
+    body += f"- **Year**: {paper.get('year') or 'N/A'}\n"
+    body += f"- **Venue**: {paper.get('venue') or 'N/A'}\n"
     body += f"- **Citations**: {paper.get('citation_count', 0)}\n"
-    body += f"- **DOI**: {paper.get('doi', 'N/A')}\n"
-    body += f"- **PMID**: {paper.get('pmid', 'N/A')}\n"
-    body += f"- **URL**: {paper.get('url', 'N/A')}\n\n"
+    body += f"- **DOI**: {paper.get('doi') or 'N/A'}\n"
+    body += f"- **PMID**: {paper.get('pmid') or 'N/A'}\n"
+    body += f"- **URL**: {paper.get('url') or 'N/A'}\n\n"
 
     body += "## Abstract\n\n"
     body += (paper.get("abstract") or "No abstract available.") + "\n\n"
@@ -111,7 +111,7 @@ tags:
     for etype, items in by_type.items():
         body += f"### {etype.replace('_', ' ').title()}\n\n"
         for item in items[:5]:
-            body += f"- {item['claim_text'][:150]}\n"
+            body += f"- {item['claim_text']}\n"
         body += "\n"
     return yaml + body
 

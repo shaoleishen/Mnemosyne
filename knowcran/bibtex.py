@@ -17,11 +17,11 @@ def paper_to_bibtex(paper: dict[str, Any]) -> str:
     except Exception:
         pass
     return f"""@article{{{key},
-  title = {{{paper.get('title', '')}}},
+  title = {{{paper.get('title', '') or ''}}},
   author = {{{authors}}},
-  year = {{{paper.get('year', '')}}},
-  journal = {{{paper.get('venue', '')}}},
-  doi = {{{paper.get('doi', '')}}}
+  year = {{{paper.get('year', '') or ''}}},
+  journal = {{{paper.get('venue', '') or ''}}},
+  doi = {{{paper.get('doi', '') or ''}}}
 }}"""
 
 

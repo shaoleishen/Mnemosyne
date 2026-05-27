@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import csv
 import io
+import json
 from pathlib import Path
 from typing import Any
 
@@ -35,7 +36,7 @@ def _build_review_text(topic: str, papers: list[dict[str, Any]], claims: list[di
     summaries = groups.get("abstract_summary", [])
     if summaries:
         for s in summaries[:5]:
-            text += f"- {s['claim_text'][:200]} {cite(s['paper_id'])}\n"
+            text += f"- {s['claim_text']} {cite(s['paper_id'])}\n"
     else:
         text += "Needs evidence.\n"
     text += "\n"
@@ -44,7 +45,7 @@ def _build_review_text(topic: str, papers: list[dict[str, Any]], claims: list[di
     results = groups.get("result", [])
     if results:
         for r in results[:8]:
-            text += f"- {r['claim_text'][:200]} {cite(r['paper_id'])}\n"
+            text += f"- {r['claim_text']} {cite(r['paper_id'])}\n"
     else:
         text += "Needs evidence.\n"
     text += "\n"
@@ -53,7 +54,7 @@ def _build_review_text(topic: str, papers: list[dict[str, Any]], claims: list[di
     methods = groups.get("method", [])
     if methods:
         for m in methods[:5]:
-            text += f"- {m['claim_text'][:200]} {cite(m['paper_id'])}\n"
+            text += f"- {m['claim_text']} {cite(m['paper_id'])}\n"
     else:
         text += "Needs evidence.\n"
     text += "\n"
@@ -62,7 +63,7 @@ def _build_review_text(topic: str, papers: list[dict[str, Any]], claims: list[di
     limitations = groups.get("limitation", [])
     if limitations:
         for l in limitations[:5]:
-            text += f"- {l['claim_text'][:200]} {cite(l['paper_id'])}\n"
+            text += f"- {l['claim_text']} {cite(l['paper_id'])}\n"
     else:
         text += "Needs evidence.\n"
     text += "\n"
@@ -71,7 +72,7 @@ def _build_review_text(topic: str, papers: list[dict[str, Any]], claims: list[di
     open_qs = groups.get("open_question", [])
     if open_qs:
         for q in open_qs[:5]:
-            text += f"- {q['claim_text'][:200]}\n"
+            text += f"- {q['claim_text']} {cite(q['paper_id'])}\n"
     else:
         text += "Needs evidence.\n"
     text += "\n"
@@ -95,19 +96,20 @@ def _build_evidence_matrix(papers: list[dict[str, Any]], claims: list[dict[str, 
             paper_id=c["paper_id"],
             title=p.get("title", ""),
             year=p.get("year"),
-            claim_text=c["claim_text"][:200],
+            claim_text=c["claim_text"],
             evidence_type=c["evidence_type"],
             confidence=c["confidence"],
         ))
     return rows
 
 
-def _write_csv(matrix: list[EvidenceMatrixRow]) -> str:
+def _write_csv(matrix: list[EvidenceMatrixRow], claims: list[dict[str, Any]] | None = None) -> str:
     buf = io.StringIO()
     writer = csv.writer(buf)
-    writer.writerow(["paper_id", "title", "year", "claim_text", "evidence_type", "confidence"])
-    for row in matrix:
-        writer.writerow([row.paper_id, row.title, row.year, row.claim_text, row.evidence_type, row.confidence])
+    writer.writerow(["claim_id", "paper_id", "title", "year", "claim_text", "evidence_type", "confidence"])
+    for i, row in enumerate(matrix):
+        cid = claims[i].get("claim_id", "") if claims and i < len(claims) else ""
+        writer.writerow([cid, row.paper_id, row.title, row.year, row.claim_text, row.evidence_type, row.confidence])
     return buf.getvalue()
 
 
@@ -122,11 +124,11 @@ def _build_bibtex(papers: list[dict[str, Any]]) -> str:
         except Exception:
             pass
         entry = f"""@article{{{key},
-  title = {{{p.get('title', '')}}},
+  title = {{{p.get('title', '') or ''}}},
   author = {{{authors}}},
-  year = {{{p.get('year', '')}}},
-  journal = {{{p.get('venue', '')}}},
-  doi = {{{p.get('doi', '')}}}
+  year = {{{p.get('year', '') or ''}}},
+  journal = {{{p.get('venue', '') or ''}}},
+  doi = {{{p.get('doi', '') or ''}}}
 }}"""
         entries.append(entry)
     return "\n\n".join(entries) + "\n"
@@ -158,7 +160,7 @@ def review(topic: str, max_papers: int = 20, storage: Storage | None = None, vau
 
         review_text = _build_review_text(topic, papers, claims)
         matrix = _build_evidence_matrix(papers, claims)
-        csv_text = _write_csv(matrix)
+        csv_text = _write_csv(matrix, claims)
         bibtex = _build_bibtex(papers)
         open_qs_text = _build_open_questions(claims)
 

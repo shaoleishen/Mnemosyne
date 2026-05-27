@@ -120,7 +120,11 @@ def export_obsidian(topic: str, storage: Storage | None = None, vault_dir: Path 
     own = storage is None
     storage = storage or Storage()
     try:
-        papers = storage.get_papers_by_topic(topic, limit=100)
+        # Use explicit topic membership if available, fall back to text search
+        if storage.has_topic_papers(topic):
+            papers = storage.get_topic_papers(topic, limit=100)
+        else:
+            papers = storage.get_papers_by_topic(topic, limit=100)
         claims = storage.get_claims_by_topic(topic)
 
         papers_dir = vault_dir / "papers"
@@ -137,12 +141,12 @@ def export_obsidian(topic: str, storage: Storage | None = None, vault_dir: Path 
             stem = paper_note_stem(p)
             paper_note_map[p["paper_id"]] = stem
             filename = f"{stem}.md"
-            (papers_dir / filename).write_text(_paper_note(p, paper_claims, links))
+            (papers_dir / filename).write_text(_paper_note(p, paper_claims, links), encoding="utf-8")
 
         for c in claims:
-            (claims_dir / f"{c['claim_id']}.md").write_text(_claim_note(c, paper_note_map))
+            (claims_dir / f"{c['claim_id']}.md").write_text(_claim_note(c, paper_note_map), encoding="utf-8")
 
-        (topics_dir / f"{slugify(topic)}.md").write_text(_topic_note(topic, papers, claims))
+        (topics_dir / f"{slugify(topic)}.md").write_text(_topic_note(topic, papers, claims), encoding="utf-8")
 
         return {"papers": len(papers), "claims": len(claims), "topics": 1}
     finally:

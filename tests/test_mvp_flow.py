@@ -99,12 +99,12 @@ def test_mvp_flow_discover_read_export_review(tmp_path: Path) -> None:
         assert storage.get_paper(row.paper_id) is not None
 
     # Verify citation keys in review match bibliography
-    review_text = (reviews_dir / "celiac-disease_review.md").read_text()
-    bib_text = (reviews_dir / "celiac-disease_bibliography.bib").read_text()
-    # Extract citation keys from review text [@key]
+    review_text = (reviews_dir / "celiac-disease_review.md").read_text(encoding="utf-8")
+    bib_text = (reviews_dir / "celiac-disease_bibliography.bib").read_text(encoding="utf-8")
+    # Extract citation keys from review text [@key] - handle hyphens and colons
     import re
-    review_keys = set(re.findall(r"\[@(\w+)\]", review_text))
-    bib_keys = set(re.findall(r"@article\{(\w+),", bib_text))
+    review_keys = set(re.findall(r"\[@([A-Za-z0-9_:-]+)\]", review_text))
+    bib_keys = set(re.findall(r"@article\{([A-Za-z0-9_:-]+),", bib_text))
     # Every review citation key should exist in bibliography
     for rk in review_keys:
         assert rk in bib_keys, f"Citation key @{rk} in review but not in bibliography"

@@ -48,14 +48,14 @@ class SemanticScholarClient:
         key = cache_key("GET", url, json.dumps(params or {}, sort_keys=True))
         cache_file = self._raw_dir / f"{key}.json"
         if cache_file.exists():
-            return json.loads(cache_file.read_text())
+            return json.loads(cache_file.read_text(encoding="utf-8"))
 
         for attempt in range(_MAX_RETRIES):
             self._wait_rate_limit()
             resp = self._client.get(url, headers=self._headers(), params=params)
             if resp.status_code == 200:
                 data = resp.json()
-                cache_file.write_text(json.dumps(data, indent=2))
+                cache_file.write_text(json.dumps(data, indent=2), encoding="utf-8")
                 return data
             if resp.status_code in _RETRY_STATUS:
                 wait = (attempt + 1) * 2
@@ -71,14 +71,14 @@ class SemanticScholarClient:
         key = cache_key("POST", url, cache_input)
         cache_file = self._raw_dir / f"{key}.json"
         if cache_file.exists():
-            return json.loads(cache_file.read_text())
+            return json.loads(cache_file.read_text(encoding="utf-8"))
 
         for attempt in range(_MAX_RETRIES):
             self._wait_rate_limit()
             resp = self._client.post(url, headers=self._headers(), json=body, params=params)
             if resp.status_code == 200:
                 data = resp.json()
-                cache_file.write_text(json.dumps(data, indent=2))
+                cache_file.write_text(json.dumps(data, indent=2), encoding="utf-8")
                 return data
             if resp.status_code in _RETRY_STATUS:
                 wait = (attempt + 1) * 2

@@ -110,3 +110,48 @@ def test_review_scopes_claims_to_selected_papers(tmp_path: Path) -> None:
     for row in output.evidence_matrix:
         assert row.paper_id == output.paper_ids[0]
     storage.close()
+
+
+def test_review_separates_placeholder_limitations(tmp_path: Path) -> None:
+    """Placeholder limitations (full_text_needed) should be in separate section."""
+    vault_dir = tmp_path / "vault"
+    db_path = tmp_path / "test.sqlite"
+    storage = Storage(db_path=db_path)
+
+    # Add paper with both real and placeholder limitations
+    paper = PaperRecord(
+        paper_id="p-limits",
+        title="Paper about Celiac Disease",
+        abstract="Abstract for paper on celiac disease.",
+        year=2023,
+        venue="Test Journal",
+        doi="10.1000/test-limits",
+        discovered_by="keyword_search",
+    )
+    storage.upsert_paper(paper)
+    storage.insert_claim(Claim(
+        claim_id="c-real-limit",
+        paper_id="p-limits",
+        claim_text="Small sample size is a limitation",
+        evidence_type="limitation",
+        confidence=0.6,
+        topic="celiac disease",
+    ))
+    storage.insert_claim(Claim(
+        claim_id="c-placeholder",
+        paper_id="p-limits",
+        claim_text="Needs full text review for limitations",
+        evidence_type="full_text_needed",
+        confidence=0.3,
+        topic="celiac disease",
+    ))
+
+    output = review("celiac disease", max_papers=5, storage=storage, vault_dir=vault_dir)
+    text = output.review_text
+
+    assert "## Limitations" in text
+    assert "### Full Text Review Needed" in text
+    assert "Small sample size" in text
+    assert "Needs full text review" in text
+
+    storage.close()

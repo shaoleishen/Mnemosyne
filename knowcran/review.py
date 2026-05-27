@@ -8,6 +8,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+from knowcran.bibtex import papers_to_bibtex
 from knowcran.config import VAULT_DIR
 from knowcran.models import EvidenceMatrixRow, ReviewOutput
 from knowcran.storage import Storage
@@ -68,6 +69,13 @@ def _build_review_text(topic: str, papers: list[dict[str, Any]], claims: list[di
         text += "Needs evidence.\n"
     text += "\n"
 
+    full_text_needed = groups.get("full_text_needed", [])
+    if full_text_needed:
+        text += "### Full Text Review Needed\n\n"
+        for ft in full_text_needed[:5]:
+            text += f"- {ft['claim_text']} {cite(ft['paper_id'])}\n"
+        text += "\n"
+
     text += "## Open Questions\n\n"
     open_qs = groups.get("open_question", [])
     if open_qs:
@@ -113,27 +121,6 @@ def _write_csv(matrix: list[EvidenceMatrixRow], claims: list[dict[str, Any]] | N
     return buf.getvalue()
 
 
-def _build_bibtex(papers: list[dict[str, Any]]) -> str:
-    entries: list[str] = []
-    for p in papers:
-        key = citation_key(p)
-        authors = ""
-        try:
-            authors_list = json.loads(p.get("authors_json") or "[]")
-            authors = " and ".join(a.get("name", "") for a in authors_list[:5])
-        except Exception:
-            pass
-        entry = f"""@article{{{key},
-  title = {{{p.get('title', '') or ''}}},
-  author = {{{authors}}},
-  year = {{{p.get('year', '') or ''}}},
-  journal = {{{p.get('venue', '') or ''}}},
-  doi = {{{p.get('doi', '') or ''}}}
-}}"""
-        entries.append(entry)
-    return "\n\n".join(entries) + "\n"
-
-
 def _build_open_questions(claims: list[dict[str, Any]]) -> str:
     text = "# Open Questions\n\n"
     qs = [c for c in claims if c["evidence_type"] == "open_question"]
@@ -150,7 +137,11 @@ def review(topic: str, max_papers: int = 20, storage: Storage | None = None, vau
     own = storage is None
     storage = storage or Storage()
     try:
-        papers = storage.get_papers_by_topic(topic, limit=max_papers)
+        # Use explicit topic membership if available, fall back to text search
+        if storage.has_topic_papers(topic):
+            papers = storage.get_topic_papers(topic, limit=max_papers)
+        else:
+            papers = storage.get_papers_by_topic(topic, limit=max_papers)
         selected_paper_ids = {p["paper_id"] for p in papers}
         claims = [
             c for c in storage.get_claims_by_topic(topic)
@@ -161,17 +152,17 @@ def review(topic: str, max_papers: int = 20, storage: Storage | None = None, vau
         review_text = _build_review_text(topic, papers, claims)
         matrix = _build_evidence_matrix(papers, claims)
         csv_text = _write_csv(matrix, claims)
-        bibtex = _build_bibtex(papers)
+        bibtex = papers_to_bibtex(papers)
         open_qs_text = _build_open_questions(claims)
 
         slug = slugify(topic)
         reviews_dir = vault_dir / "reviews"
         reviews_dir.mkdir(parents=True, exist_ok=True)
 
-        (reviews_dir / f"{slug}_review.md").write_text(review_text)
-        (reviews_dir / f"{slug}_evidence_matrix.csv").write_text(csv_text)
-        (reviews_dir / f"{slug}_bibliography.bib").write_text(bibtex)
-        (reviews_dir / f"{slug}_open_questions.md").write_text(open_qs_text)
+        (reviews_dir / f"{slug}_review.md").write_text(review_text, encoding="utf-8")
+        (reviews_dir / f"{slug}_evidence_matrix.csv").write_text(csv_text, encoding="utf-8")
+        (reviews_dir / f"{slug}_bibliography.bib").write_text(bibtex, encoding="utf-8")
+        (reviews_dir / f"{slug}_open_questions.md").write_text(open_qs_text, encoding="utf-8")
 
         return ReviewOutput(
             topic=topic,

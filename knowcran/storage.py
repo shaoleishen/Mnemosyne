@@ -54,6 +54,15 @@ CREATE TABLE IF NOT EXISTS claims (
     created_at TEXT
 );
 
+CREATE TABLE IF NOT EXISTS topic_papers (
+    topic TEXT,
+    paper_id TEXT,
+    source TEXT,
+    relevance_score REAL,
+    created_at TEXT,
+    PRIMARY KEY(topic, paper_id)
+);
+
 CREATE TABLE IF NOT EXISTS runs (
     run_id TEXT PRIMARY KEY,
     command TEXT,
@@ -186,3 +195,34 @@ class Storage:
 
     def count_links(self) -> int:
         return self.conn.execute("SELECT COUNT(*) FROM paper_links").fetchone()[0]
+
+    def insert_topic_paper(self, topic: str, paper_id: str, source: str = "discover", relevance_score: float = 0.0) -> None:
+        now = datetime.now(timezone.utc).isoformat()
+        self.conn.execute(
+            """INSERT OR REPLACE INTO topic_papers (topic, paper_id, source, relevance_score, created_at)
+            VALUES (?, ?, ?, ?, ?)""",
+            (topic, paper_id, source, relevance_score, now),
+        )
+        self.conn.commit()
+
+    def insert_topic_papers(self, topic: str, paper_ids: list[str], source: str = "discover", scores: list[float] | None = None) -> None:
+        for i, pid in enumerate(paper_ids):
+            score = scores[i] if scores and i < len(scores) else 0.0
+            self.insert_topic_paper(topic, pid, source, score)
+
+    def get_topic_papers(self, topic: str, limit: int = 100) -> list[dict[str, Any]]:
+        rows = self.conn.execute(
+            """SELECT p.* FROM papers p
+            INNER JOIN topic_papers tp ON p.paper_id = tp.paper_id
+            WHERE tp.topic = ?
+            ORDER BY tp.relevance_score DESC, p.relevance_score DESC
+            LIMIT ?""",
+            (topic, limit),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def has_topic_papers(self, topic: str) -> bool:
+        row = self.conn.execute(
+            "SELECT COUNT(*) FROM topic_papers WHERE topic = ?", (topic,)
+        ).fetchone()
+        return row[0] > 0

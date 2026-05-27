@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from math import ceil
 from typing import Any
 
 from rich.console import Console
@@ -48,7 +49,8 @@ def _rank(papers: list[dict[str, Any]], query: str) -> list[PaperRecord]:
     for p in papers:
         rec = PaperRecord.from_s2(p)
         oa = bool(p.get("openAccessPdf"))
-        score = relevance_score(rec.title, rec.abstract or "", query, rec.citation_count, rec.year, oa)
+        fields = p.get("fieldsOfStudy") or []
+        score = relevance_score(rec.title, rec.abstract or "", query, rec.citation_count, rec.year, oa, fields_of_study=fields)
         rec.relevance_score = score
         records.append((score, rec))
     records.sort(key=lambda x: x[0], reverse=True)
@@ -69,13 +71,13 @@ def discover(
 
     try:
         queries = generate_queries(question)
-        per_query = max(1, limit // len(queries))
+        candidate_pool = max(20, ceil(limit * 2 / len(queries)))
         console.print(f"[bold]Running {len(queries)} queries for: {question} (limit {limit} total)[/bold]")
 
         all_papers: list[dict[str, Any]] = []
         for q in queries:
             console.print(f"  Searching: {q}")
-            results = client.search_bulk(q, limit=per_query)
+            results = client.search_bulk(q, limit=candidate_pool)
             for r in results:
                 r["_query"] = q
             all_papers.extend(results)
@@ -88,6 +90,12 @@ def discover(
             r.discovered_by = "keyword_search"
 
         storage.upsert_papers(ranked)
+        storage.insert_topic_papers(
+            question,
+            [p.paper_id for p in ranked],
+            source="discover",
+            scores=[p.relevance_score for p in ranked],
+        )
         console.print(f"  Saved {len(ranked)} papers to database")
 
         if expand:

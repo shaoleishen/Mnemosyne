@@ -166,7 +166,11 @@ def stats(
     try:
         console.print(f"Papers:  {storage.count_papers()}")
         console.print(f"Claims:  {storage.count_claims()}")
-        console.print(f"Links:   {storage.count_links()}")
+        links = storage.count_links()
+        if links == 0:
+            console.print(f"Links:   {links}  (run discover --expand to collect references, citations, and recommendations)")
+        else:
+            console.print(f"Links:   {links}")
     finally:
         storage.close()
 

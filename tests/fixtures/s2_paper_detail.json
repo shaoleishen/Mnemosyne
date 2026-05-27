@@ -1,0 +1,23 @@
+{
+  "paperId": "paper-001",
+  "title": "Celiac Disease: Mechanisms and Treatment",
+  "abstract": "Celiac disease is an autoimmune disorder affecting the small intestine. We used a cohort study design with 200 patients. Results demonstrate significant improvement on gluten-free diet. However, small sample size limits generalizability.",
+  "year": 2023,
+  "publicationDate": "2023-06-15",
+  "venue": "Nature Medicine",
+  "url": "https://www.semanticscholar.org/paper/paper-001",
+  "externalIds": {"DOI": "10.1000/test001", "PubMed": "12345678"},
+  "citationCount": 42,
+  "referenceCount": 30,
+  "influentialCitationCount": 5,
+  "fieldsOfStudy": ["Medicine", "Biology"],
+  "s2FieldsOfStudy": [{"category": "Medicine", "source": "s2-fos-model"}],
+  "openAccessPdf": {"url": "https://example.com/paper001.pdf", "status": "GREEN"},
+  "authors": [{"authorId": "a1", "name": "Smith J."}, {"authorId": "a2", "name": "Doe A."}],
+  "references": [
+    {"paperId": "ref-001", "title": "Foundational Celiac Study", "year": 2010}
+  ],
+  "citations": [
+    {"paperId": "cite-001", "title": "New Advances in Celiac Treatment", "year": 2024}
+  ]
+}

@@ -1,0 +1,40 @@
+{
+  "total": 2,
+  "token": null,
+  "data": [
+    {
+      "paperId": "paper-001",
+      "title": "Celiac Disease: Mechanisms and Treatment",
+      "abstract": "Celiac disease is an autoimmune disorder. We used a cohort study to analyze the effects of gluten-free diet. Results show significant improvement in symptoms. However, small sample size is a limitation.",
+      "year": 2023,
+      "publicationDate": "2023-06-15",
+      "venue": "Nature Medicine",
+      "url": "https://www.semanticscholar.org/paper/paper-001",
+      "externalIds": {"DOI": "10.1000/test001", "PubMed": "12345678"},
+      "citationCount": 42,
+      "referenceCount": 30,
+      "influentialCitationCount": 5,
+      "fieldsOfStudy": ["Medicine", "Biology"],
+      "s2FieldsOfStudy": [{"category": "Medicine", "source": "s2-fos-model"}],
+      "openAccessPdf": {"url": "https://example.com/paper001.pdf", "status": "GREEN"},
+      "authors": [{"authorId": "a1", "name": "Smith J."}, {"authorId": "a2", "name": "Doe A."}]
+    },
+    {
+      "paperId": "paper-002",
+      "title": "Genetic Basis of Celiac Disease",
+      "abstract": "This study demonstrates the association between HLA-DQ2 and celiac disease in a randomized controlled trial. We found increased risk in carriers. Further research needed on mechanism.",
+      "year": 2022,
+      "publicationDate": "2022-03-10",
+      "venue": "Gastroenterology",
+      "url": "https://www.semanticscholar.org/paper/paper-002",
+      "externalIds": {"DOI": "10.1000/test002", "ArXiv": "2203.12345"},
+      "citationCount": 88,
+      "referenceCount": 45,
+      "influentialCitationCount": 12,
+      "fieldsOfStudy": ["Medicine", "Genetics"],
+      "s2FieldsOfStudy": [{"category": "Medicine", "source": "s2-fos-model"}],
+      "openAccessPdf": null,
+      "authors": [{"authorId": "a3", "name": "Chen L."}]
+    }
+  ]
+}

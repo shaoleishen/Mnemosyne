@@ -20,3 +20,6 @@ htmlcov/
 *.sqlite
 *.sqlite3
 .DS_Store
+.claw/
+pi-packages/
+UNKNOWN.egg-info/

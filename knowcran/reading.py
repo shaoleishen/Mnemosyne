@@ -188,7 +188,8 @@ def read_paper(paper_id: str, topic: str | None = None, storage: Storage | None 
 
 
 def read_topic(topic: str, limit: int = 20, storage: Storage | None = None,
-               llm_provider: Any | None = None) -> list[Claim]:
+               llm_provider: Any | None = None,
+               agent_provider: Any | None = None) -> list[Claim]:
     own = storage is None
     storage = storage or Storage()
     try:
@@ -199,9 +200,12 @@ def read_topic(topic: str, limit: int = 20, storage: Storage | None = None,
             papers = storage.get_papers_by_topic(topic, limit=limit)
         all_claims: list[Claim] = []
         for p in papers:
-            if llm_provider is not None:
+            if agent_provider is not None:
                 from knowcran.extraction import extract_paper_claims
-                claims, extraction_method = extract_paper_claims(p, topic, llm_provider)
+                claims, extraction_method = extract_paper_claims(p, topic, agent_provider=agent_provider, storage=storage)
+            elif llm_provider is not None:
+                from knowcran.extraction import extract_paper_claims
+                claims, extraction_method = extract_paper_claims(p, topic, provider=llm_provider)
             else:
                 claims = _extract_claims(p, topic)
                 extraction_method = "deterministic"

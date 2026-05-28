@@ -64,6 +64,7 @@ def discover(
     client: SemanticScholarClient | None = None,
     storage: Storage | None = None,
     llm_provider: Any | None = None,
+    agent_provider: Any | None = None,
 ) -> list[PaperRecord]:
     own_client = client is None
     own_storage = storage is None
@@ -90,8 +91,10 @@ def discover(
         for r in ranked:
             r.discovered_by = "keyword_search"
 
-        # Optional LLM reranking
-        if llm_provider is not None:
+        # Optional agent/LLM reranking
+        if agent_provider is not None:
+            ranked = _agent_rerank(ranked, question, agent_provider, storage)
+        elif llm_provider is not None:
             ranked = _llm_rerank(ranked, question, llm_provider, storage)
 
         storage.upsert_papers(ranked)
@@ -112,6 +115,66 @@ def discover(
             client.close()
         if own_storage:
             storage.close()
+
+
+def _agent_rerank(papers: list[PaperRecord], topic: str, provider: Any, storage: Storage) -> list[PaperRecord]:
+    """Apply agent-based reranking to adjust paper relevance scores."""
+    import hashlib
+    import json
+    import uuid
+    from datetime import datetime, timezone
+    from knowcran.agents.audit import audit_agent_run
+    from knowcran.agents.schemas import AgentTask
+
+    if not papers:
+        return papers
+
+    try:
+        paper_dicts = [{"paper_id": p.paper_id, "title": p.title, "abstract": p.abstract or ""} for p in papers]
+        task = AgentTask(
+            task_id=f"rerank-{uuid.uuid4().hex[:8]}",
+            task_type="relevance_rerank",
+            topic=topic,
+            input_json={"topic": topic, "papers": paper_dicts},
+            output_schema_name="PaperRerankOutput",
+        )
+        result = provider.run(task)
+        audit_agent_run(task, result, storage)
+
+        if result.status != "ok" or not result.output_json:
+            console.print(f"  [yellow]Agent reranking failed: {result.error}. Keeping deterministic order.[/yellow]")
+            return papers
+
+        decisions = result.output_json.get("decisions", [])
+        score_map: dict[str, float] = {}
+        reason_map: dict[str, str] = {}
+        for d in decisions:
+            if d.get("is_relevant", True):
+                score_map[d["paper_id"]] = d.get("score", 0.5)
+                reason_map[d["paper_id"]] = d.get("reason", "")
+
+        for p in papers:
+            if p.paper_id in score_map:
+                llm_score = score_map[p.paper_id]
+                p.relevance_score = round((p.relevance_score + llm_score) / 2, 4)
+
+        # Store agent rerun info in topic_papers
+        for p in papers:
+            if p.paper_id in score_map:
+                storage.insert_topic_paper(
+                    topic, p.paper_id, source=f"agent:{provider.name}",
+                    relevance_score=p.relevance_score,
+                    llm_relevance_score=score_map[p.paper_id],
+                    llm_relevance_reason=reason_map.get(p.paper_id, ""),
+                )
+
+        papers.sort(key=lambda x: x.relevance_score, reverse=True)
+        console.print(f"  Agent reranked {len(papers)} papers via {provider.name}")
+
+    except Exception as e:
+        console.print(f"  [yellow]Agent reranking error: {e}. Keeping deterministic order.[/yellow]")
+
+    return papers
 
 
 def _llm_rerank(papers: list[PaperRecord], topic: str, provider: Any, storage: Storage) -> list[PaperRecord]:

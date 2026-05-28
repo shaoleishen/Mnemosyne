@@ -195,6 +195,51 @@ def _write_csv(matrix: list[EvidenceMatrixRow], claims: list[dict[str, Any]] | N
     return buf.getvalue()
 
 
+def _agent_review_synthesis(
+    topic: str,
+    papers: list[dict[str, Any]],
+    claims: list[dict[str, Any]],
+    agent_provider: Any,
+    storage: Storage,
+) -> str | None:
+    """Attempt review synthesis via an agent provider."""
+    import uuid
+    from knowcran.agents.audit import audit_agent_run
+    from knowcran.agents.schemas import AgentTask
+
+    try:
+        valid_keys = {citation_key(p) for p in papers}
+        citation_keys_map = {p["paper_id"]: citation_key(p) for p in papers}
+
+        task = AgentTask(
+            task_id=f"review-{uuid.uuid4().hex[:8]}",
+            task_type="review_synthesis",
+            topic=topic,
+            input_json={
+                "topic": topic,
+                "papers": papers,
+                "claims": claims,
+                "citation_keys": citation_keys_map,
+            },
+            output_schema_name="ReviewSynthesisOutput",
+        )
+        result = agent_provider.run(task)
+        audit_agent_run(task, result, storage)
+
+        if result.status != "ok" or not result.output_json:
+            return None
+
+        # Validate citation keys
+        invalid_keys = _validate_review_citations(result.output_json, valid_keys)
+        if invalid_keys:
+            return None
+
+        return _build_review_text_from_llm(topic, papers, result.output_json)
+
+    except Exception:
+        return None
+
+
 def _build_open_questions(claims: list[dict[str, Any]]) -> str:
     text = "# Open Questions\n\n"
     qs = [c for c in claims if c["evidence_type"] == "open_question"]
@@ -213,6 +258,7 @@ def review(
     storage: Storage | None = None,
     vault_dir: Path = VAULT_DIR,
     llm_provider: Any | None = None,
+    agent_provider: Any | None = None,
 ) -> ReviewOutput:
     own = storage is None
     storage = storage or Storage()
@@ -229,9 +275,12 @@ def review(
         ]
         paper_ids = [p["paper_id"] for p in papers]
 
-        # Try LLM review synthesis if provider available
+        # Try agent/LLM review synthesis
         review_text = None
-        if llm_provider is not None:
+        if agent_provider is not None:
+            review_text = _agent_review_synthesis(topic, papers, claims, agent_provider, storage)
+
+        if review_text is None and llm_provider is not None:
             try:
                 from knowcran.llm.prompts import build_review_prompt
                 from knowcran.llm.schemas import ReviewSynthesisOutput
@@ -244,12 +293,11 @@ def review(
                 valid_keys = {citation_key(p) for p in papers}
                 invalid_keys = _validate_review_citations(result, valid_keys)
                 if invalid_keys:
-                    # LLM used invalid citation keys - fall back to deterministic
                     raise ValueError(f"LLM used invalid citation keys: {invalid_keys}")
 
                 review_text = _build_review_text_from_llm(topic, papers, result)
             except Exception:
-                review_text = None  # Fall back to deterministic
+                review_text = None
 
         # Fallback to deterministic review
         if review_text is None:

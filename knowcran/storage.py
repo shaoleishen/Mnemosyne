@@ -95,6 +95,24 @@ CREATE TABLE IF NOT EXISTS llm_runs (
     error TEXT,
     created_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS agent_runs (
+    run_id TEXT PRIMARY KEY,
+    provider TEXT NOT NULL,
+    provider_mode TEXT NOT NULL,
+    model TEXT,
+    task_type TEXT NOT NULL,
+    task_id TEXT NOT NULL,
+    input_hash TEXT NOT NULL,
+    input_json TEXT,
+    output_schema_name TEXT,
+    raw_output TEXT,
+    parsed_output_json TEXT,
+    status TEXT NOT NULL,
+    error TEXT,
+    usage_json TEXT,
+    created_at TEXT NOT NULL
+);
 """
 
 
@@ -367,6 +385,65 @@ class Storage:
                 "SELECT * FROM llm_runs ORDER BY created_at DESC LIMIT ?", (limit,)
             ).fetchall()
         return [dict(r) for r in rows]
+
+    # --- Agent Runs ---
+
+    def insert_agent_run(self, run_id: str, provider: str, provider_mode: str,
+                         task_type: str, task_id: str, input_hash: str,
+                         model: str | None = None, input_json: str | None = None,
+                         output_schema_name: str | None = None,
+                         raw_output: str | None = None, parsed_output_json: str | None = None,
+                         status: str = "pending", error: str | None = None,
+                         usage_json: str | None = None) -> None:
+        now = datetime.now(timezone.utc).isoformat()
+        self.conn.execute(
+            """INSERT INTO agent_runs (run_id, provider, provider_mode, model, task_type, task_id,
+                input_hash, input_json, output_schema_name, raw_output, parsed_output_json,
+                status, error, usage_json, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (run_id, provider, provider_mode, model, task_type, task_id,
+             input_hash, input_json, output_schema_name, raw_output, parsed_output_json,
+             status, error, usage_json, now),
+        )
+        self.conn.commit()
+
+    def update_agent_run(self, run_id: str, status: str, raw_output: str | None = None,
+                         parsed_output_json: str | None = None, error: str | None = None,
+                         usage_json: str | None = None) -> None:
+        self.conn.execute(
+            """UPDATE agent_runs SET status = ?, raw_output = COALESCE(?, raw_output),
+                parsed_output_json = COALESCE(?, parsed_output_json), error = COALESCE(?, error),
+                usage_json = COALESCE(?, usage_json)
+            WHERE run_id = ?""",
+            (status, raw_output, parsed_output_json, error, usage_json, run_id),
+        )
+        self.conn.commit()
+
+    def get_agent_runs(self, task_type: str | None = None, provider: str | None = None,
+                       status: str | None = None, limit: int = 50) -> list[dict[str, Any]]:
+        conditions = []
+        params: list[Any] = []
+        if task_type:
+            conditions.append("task_type = ?")
+            params.append(task_type)
+        if provider:
+            conditions.append("provider = ?")
+            params.append(provider)
+        if status:
+            conditions.append("status = ?")
+            params.append(status)
+
+        where = " WHERE " + " AND ".join(conditions) if conditions else ""
+        params.append(limit)
+
+        rows = self.conn.execute(
+            f"SELECT * FROM agent_runs{where} ORDER BY created_at DESC LIMIT ?",
+            params,
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def get_agent_run_failures(self, limit: int = 20) -> list[dict[str, Any]]:
+        return self.get_agent_runs(status="error", limit=limit)
 
 
 def compute_claim_hash(claim: Claim) -> str:

@@ -48,6 +48,35 @@ def _get_llm_provider(settings, use_llm: bool | None = None):
     return create_provider(settings)
 
 
+def _get_agent_provider(settings, agent_provider_name: str | None = None, use_agent: bool | None = None):
+    """Get agent provider based on settings and CLI flags."""
+    from knowcran.agents.registry import get_registry
+
+    if use_agent is False:
+        return None
+
+    registry = get_registry()
+
+    if agent_provider_name:
+        try:
+            return registry.get(agent_provider_name)
+        except Exception:
+            console.print(f"[yellow]Agent provider '{agent_provider_name}' not found, using default.[/yellow]")
+
+    if use_agent is True or agent_provider_name:
+        return registry.get()
+
+    # Auto-detect: use default if it's not deterministic
+    try:
+        default = registry.get()
+        if default.name != "deterministic":
+            return default
+    except Exception:
+        pass
+
+    return None
+
+
 @app.callback()
 def _global_options(
     data_dir: str | None = typer.Option(None, "--data-dir", help="Data directory path"),
@@ -78,6 +107,7 @@ def discover(
     data_dir: str | None = typer.Option(None, "--data-dir", help="Data directory path"),
     vault_dir: str | None = typer.Option(None, "--vault-dir", help="Vault directory path"),
     llm: bool | None = typer.Option(None, "--llm/--no-llm", help="Enable/disable LLM reranking"),
+    agent_provider: str | None = typer.Option(None, "--agent-provider", help="Agent provider name (e.g. pi-print-json, claw)"),
 ) -> None:
     """Search Semantic Scholar and store papers."""
     settings = _settings(data_dir, vault_dir)
@@ -86,8 +116,9 @@ def discover(
     from knowcran.storage import Storage
     client = SemanticScholarClient(api_key=settings.s2_api_key, rate_limit=settings.rate_limit_seconds, raw_dir=settings.raw_dir)
     storage = Storage(db_path=settings.db_path)
-    provider = _get_llm_provider(settings, llm)
-    papers = do_discover(question, limit=limit, expand=expand, client=client, storage=storage, llm_provider=provider)
+    provider = _get_agent_provider(settings, agent_provider, llm)
+    llm_prov = _get_llm_provider(settings, llm) if provider is None else None
+    papers = do_discover(question, limit=limit, expand=expand, client=client, storage=storage, llm_provider=llm_prov, agent_provider=provider)
     console.print(f"[green]Discovered {len(papers)} papers.[/green]")
 
 
@@ -116,14 +147,16 @@ def read_topic_cmd(
     limit: int = typer.Option(20, help="Max papers to process"),
     data_dir: str | None = typer.Option(None, "--data-dir", help="Data directory path"),
     llm: bool | None = typer.Option(None, "--llm/--no-llm", help="Enable/disable LLM extraction"),
+    agent_provider: str | None = typer.Option(None, "--agent-provider", help="Agent provider name"),
 ) -> None:
     """Extract claims from all papers matching a topic."""
     settings = _settings(data_dir, None)
     from knowcran.reading import read_topic
     from knowcran.storage import Storage
     storage = Storage(db_path=settings.db_path)
-    provider = _get_llm_provider(settings, llm)
-    claims = read_topic(topic, limit=limit, storage=storage, llm_provider=provider)
+    agent_prov = _get_agent_provider(settings, agent_provider, llm)
+    llm_prov = _get_llm_provider(settings, llm) if agent_prov is None else None
+    claims = read_topic(topic, limit=limit, storage=storage, llm_provider=llm_prov, agent_provider=agent_prov)
     console.print(f"[green]Extracted {len(claims)} claims from topic papers.[/green]")
 
 
@@ -149,14 +182,16 @@ def review(
     data_dir: str | None = typer.Option(None, "--data-dir", help="Data directory path"),
     vault_dir: str | None = typer.Option(None, "--vault-dir", help="Vault directory path"),
     llm: bool | None = typer.Option(None, "--llm/--no-llm", help="Enable/disable LLM review synthesis"),
+    agent_provider: str | None = typer.Option(None, "--agent-provider", help="Agent provider name"),
 ) -> None:
     """Generate a literature review from stored claims."""
     settings = _settings(data_dir, vault_dir)
     from knowcran.review import review as do_review
     from knowcran.storage import Storage
     storage = Storage(db_path=settings.db_path)
-    provider = _get_llm_provider(settings, llm)
-    output = do_review(topic, max_papers=max_papers, storage=storage, vault_dir=settings.vault_dir, llm_provider=provider)
+    agent_prov = _get_agent_provider(settings, agent_provider, llm)
+    llm_prov = _get_llm_provider(settings, llm) if agent_prov is None else None
+    output = do_review(topic, max_papers=max_papers, storage=storage, vault_dir=settings.vault_dir, llm_provider=llm_prov, agent_provider=agent_prov)
     console.print(f"[green]Review generated with {len(output.evidence_matrix)} evidence items and {len(output.paper_ids)} papers.[/green]")
 
 
@@ -249,6 +284,94 @@ def llm_doctor(
             console.print(f"[green]Live test succeeded. Response: {str(result)[:200]}[/green]")
         except Exception as e:
             console.print(f"[red]Live test failed: {e}[/red]")
+
+
+agents_app = typer.Typer(name="agents", help="Manage agent providers.")
+app.add_typer(agents_app, name="agents")
+
+
+@agents_app.command("list")
+def agents_list():
+    """List available agent providers."""
+    from knowcran.agents.registry import get_registry
+    registry = get_registry()
+    providers = registry.list_providers()
+    table = Table(title="Agent Providers")
+    table.add_column("Name", style="bold")
+    table.add_column("Available")
+    table.add_column("Default")
+    table.add_column("Capabilities")
+    for p in providers:
+        avail = "[green]Yes[/green]" if p["available"] else "[red]No[/red]"
+        default = "[bold]Yes[/bold]" if p["is_default"] else ""
+        caps = ", ".join(p["capabilities"])
+        table.add_row(p["name"], avail, default, caps)
+    console.print(table)
+
+
+@agents_app.command("doctor")
+def agents_doctor(
+    live: bool = typer.Option(False, "--live", help="Run a live test"),
+    data_dir: str | None = typer.Option(None, "--data-dir", help="Data directory path"),
+):
+    """Check agent provider configuration."""
+    from knowcran.agents.registry import get_registry
+    from knowcran.agents.schemas import AgentTask
+
+    registry = get_registry()
+    providers = registry.list_providers()
+
+    console.print(f"[bold]Default provider:[/bold] {registry.default_name or 'none'}")
+    console.print()
+
+    for p in providers:
+        status = "[green]Available[/green]" if p["available"] else "[red]Not available[/red]"
+        console.print(f"[bold]{p['name']}[/bold]: {status}")
+        console.print(f"  Capabilities: {', '.join(p['capabilities'])}")
+
+    if live:
+        console.print("\n[bold]Running live health check...[/bold]")
+        provider = registry.get()
+        task = AgentTask(task_id="health-check", task_type="health_check")
+        result = provider.run(task)
+        if result.status == "ok":
+            console.print(f"[green]Health check passed via {provider.name}[/green]")
+        else:
+            console.print(f"[red]Health check failed: {result.error}[/red]")
+
+
+@agents_app.command("failures")
+def agents_failures(
+    limit: int = typer.Option(20, help="Max failures to show"),
+    data_dir: str | None = typer.Option(None, "--data-dir", help="Data directory path"),
+):
+    """Show recent agent run failures."""
+    settings = _settings(data_dir, None)
+    from knowcran.storage import Storage
+    storage = Storage(db_path=settings.db_path)
+    try:
+        failures = storage.get_agent_run_failures(limit=limit)
+        if not failures:
+            console.print("[green]No recent failures.[/green]")
+            return
+        table = Table(title="Recent Agent Run Failures")
+        table.add_column("Task ID")
+        table.add_column("Provider")
+        table.add_column("Task Type")
+        table.add_column("Error")
+        table.add_column("Time")
+        for f in failures:
+            table.add_row(f["task_id"], f["provider"], f["task_type"], (f.get("error") or "")[:60], f["created_at"][:19])
+        console.print(table)
+    finally:
+        storage.close()
+
+
+@app.command("serve-mcp")
+def serve_mcp_cmd() -> None:
+    """Start MCP server for Claude Code and other MCP clients."""
+    from knowcran.server.mcp import serve_mcp
+    serve_mcp()
 
 
 def main() -> None:

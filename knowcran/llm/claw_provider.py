@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import subprocess
 import time
@@ -101,6 +102,21 @@ class ClawLLMProvider:
         """
         cmd = self._build_command(prompt)
         last_error: Exception | None = None
+        
+        # Prepare environment with Mimo API variables
+        env = os.environ.copy()
+        mimo_env_vars = [
+            "ANTHROPIC_BASE_URL",
+            "ANTHROPIC_AUTH_TOKEN",
+            "ANTHROPIC_MODEL",
+            "ANTHROPIC_DEFAULT_SONNET_MODEL",
+            "ANTHROPIC_DEFAULT_OPUS_MODEL",
+            "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+        ]
+        for var in mimo_env_vars:
+            value = os.getenv(var)
+            if value:
+                env[var] = value
 
         for attempt in range(self.max_retries + 1):
             try:
@@ -110,6 +126,7 @@ class ClawLLMProvider:
                     capture_output=True,
                     text=True,
                     timeout=self.timeout_seconds,
+                    env=env,
                 )
 
                 if result.returncode != 0:

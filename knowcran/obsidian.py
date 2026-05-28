@@ -7,10 +7,10 @@ from typing import Any
 
 from knowcran.config import VAULT_DIR
 from knowcran.storage import Storage
-from knowcran.utils import paper_note_stem, slugify
+from knowcran.utils import citation_key, paper_note_stem, slugify
 
 
-def _paper_note(paper: dict[str, Any], claims: list[dict[str, Any]], links: list[dict[str, Any]]) -> str:
+def _paper_note(paper: dict[str, Any], claims: list[dict[str, Any]], links: list[dict[str, Any]], citation_key: str = "") -> str:
     yaml = f"""---
 paper_id: {paper['paper_id']}
 title: "{paper['title'].replace('"', "'")}"
@@ -20,6 +20,7 @@ doi: {paper.get('doi', '') or ''}
 pmid: {paper.get('pmid', '') or ''}
 citation_count: {paper.get('citation_count', 0)}
 discovered_by: {paper.get('discovered_by', '')}
+citation_key: "{citation_key}"
 status: unread
 tags:
   - paper
@@ -73,11 +74,13 @@ tags:
 
 
 def _claim_note(claim: dict[str, Any], paper_note_map: dict[str, str] | None = None) -> str:
+    extraction_method = claim.get("extraction_method", "deterministic")
     yaml = f"""---
 claim_id: {claim['claim_id']}
 paper_id: {claim['paper_id']}
 evidence_type: {claim['evidence_type']}
 confidence: {claim['confidence']}
+extraction_method: {extraction_method}
 tags:
   - claim
   - {claim['evidence_type']}
@@ -141,7 +144,8 @@ def export_obsidian(topic: str, storage: Storage | None = None, vault_dir: Path 
             stem = paper_note_stem(p)
             paper_note_map[p["paper_id"]] = stem
             filename = f"{stem}.md"
-            (papers_dir / filename).write_text(_paper_note(p, paper_claims, links), encoding="utf-8")
+            ckey = citation_key(p)
+            (papers_dir / filename).write_text(_paper_note(p, paper_claims, links, ckey), encoding="utf-8")
 
         for c in claims:
             (claims_dir / f"{c['claim_id']}.md").write_text(_claim_note(c, paper_note_map), encoding="utf-8")

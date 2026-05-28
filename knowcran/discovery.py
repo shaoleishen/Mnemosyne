@@ -63,6 +63,7 @@ def discover(
     expand: bool = False,
     client: SemanticScholarClient | None = None,
     storage: Storage | None = None,
+    llm_provider: Any | None = None,
 ) -> list[PaperRecord]:
     own_client = client is None
     own_storage = storage is None
@@ -89,6 +90,10 @@ def discover(
         for r in ranked:
             r.discovered_by = "keyword_search"
 
+        # Optional LLM reranking
+        if llm_provider is not None:
+            ranked = _llm_rerank(ranked, question, llm_provider, storage)
+
         storage.upsert_papers(ranked)
         storage.insert_topic_papers(
             question,
@@ -107,6 +112,56 @@ def discover(
             client.close()
         if own_storage:
             storage.close()
+
+
+def _llm_rerank(papers: list[PaperRecord], topic: str, provider: Any, storage: Storage) -> list[PaperRecord]:
+    """Apply LLM reranking to adjust paper relevance scores."""
+    from knowcran.llm.prompts import build_relevance_prompt
+    from knowcran.llm.schemas import PaperRerankOutput
+
+    if not papers:
+        return papers
+
+    try:
+        paper_dicts = [{"paper_id": p.paper_id, "title": p.title, "abstract": p.abstract or ""} for p in papers]
+        prompt = build_relevance_prompt(topic, paper_dicts)
+        result = provider.call(prompt, task_type="relevance_rerank")
+        parsed = PaperRerankOutput.model_validate(result)
+
+        # Map LLM scores back to papers
+        score_map: dict[str, float] = {}
+        for d in parsed.decisions:
+            if d.is_relevant:
+                score_map[d.paper_id] = d.score
+
+        for p in papers:
+            if p.paper_id in score_map:
+                # Blend deterministic and LLM scores
+                llm_score = score_map[p.paper_id]
+                p.relevance_score = round((p.relevance_score + llm_score) / 2, 4)
+
+        # Re-sort by blended score
+        papers.sort(key=lambda x: x.relevance_score, reverse=True)
+        console.print(f"  LLM reranked {len(papers)} papers")
+
+        # Store LLM rerun info
+        import hashlib
+        import json
+        from datetime import datetime, timezone
+        run_id = hashlib.sha256(f"rerank:{topic}:{datetime.now(timezone.utc).isoformat()}".encode()).hexdigest()[:16]
+        storage.insert_llm_run(
+            run_id=run_id,
+            provider="claw",
+            task_type="relevance_rerank",
+            input_hash=hashlib.sha256(prompt.encode()).hexdigest()[:16],
+            status="completed",
+            parsed_output_json=json.dumps(result),
+        )
+
+    except Exception as e:
+        console.print(f"  [yellow]LLM reranking failed, keeping deterministic order: {e}[/yellow]")
+
+    return papers
 
 
 def _expand(top_papers: list[PaperRecord], client: SemanticScholarClient, storage: Storage) -> None:

@@ -187,7 +187,8 @@ def read_paper(paper_id: str, topic: str | None = None, storage: Storage | None 
             storage.close()
 
 
-def read_topic(topic: str, limit: int = 20, storage: Storage | None = None) -> list[Claim]:
+def read_topic(topic: str, limit: int = 20, storage: Storage | None = None,
+               llm_provider: Any | None = None) -> list[Claim]:
     own = storage is None
     storage = storage or Storage()
     try:
@@ -198,8 +199,16 @@ def read_topic(topic: str, limit: int = 20, storage: Storage | None = None) -> l
             papers = storage.get_papers_by_topic(topic, limit=limit)
         all_claims: list[Claim] = []
         for p in papers:
-            claims = _extract_claims(p, topic)
-            storage.insert_claims(claims)
+            if llm_provider is not None:
+                from knowcran.extraction import extract_paper_claims
+                claims, extraction_method = extract_paper_claims(p, topic, llm_provider)
+            else:
+                claims = _extract_claims(p, topic)
+                extraction_method = "deterministic"
+
+            # Use idempotent upsert to avoid duplicates
+            for claim in claims:
+                storage.upsert_claim_idempotent(claim, extraction_method=extraction_method)
             all_claims.extend(claims)
         return all_claims
     finally:

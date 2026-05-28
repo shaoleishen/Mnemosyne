@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
@@ -51,7 +53,13 @@ CREATE TABLE IF NOT EXISTS claims (
     confidence REAL,
     source_location TEXT,
     topic TEXT,
-    created_at TEXT
+    created_at TEXT,
+    claim_hash TEXT,
+    source_text_hash TEXT,
+    source_span_json TEXT,
+    extraction_method TEXT DEFAULT 'deterministic',
+    is_placeholder INTEGER DEFAULT 0,
+    citation_key TEXT
 );
 
 CREATE TABLE IF NOT EXISTS topic_papers (
@@ -59,7 +67,10 @@ CREATE TABLE IF NOT EXISTS topic_papers (
     paper_id TEXT,
     source TEXT,
     relevance_score REAL,
-    created_at TEXT,
+    llm_relevance_score REAL,
+    llm_relevance_reason TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
     PRIMARY KEY(topic, paper_id)
 );
 
@@ -70,7 +81,57 @@ CREATE TABLE IF NOT EXISTS runs (
     params_json TEXT,
     created_at TEXT
 );
+
+CREATE TABLE IF NOT EXISTS llm_runs (
+    run_id TEXT PRIMARY KEY,
+    provider TEXT NOT NULL,
+    model TEXT,
+    task_type TEXT NOT NULL,
+    input_hash TEXT NOT NULL,
+    prompt_json TEXT,
+    raw_output TEXT,
+    parsed_output_json TEXT,
+    status TEXT NOT NULL,
+    error TEXT,
+    created_at TEXT NOT NULL
+);
 """
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    """Apply idempotent schema migrations for existing databases."""
+    cursor = conn.cursor()
+
+    # Get existing columns for claims table
+    cursor.execute("PRAGMA table_info(claims)")
+    existing_cols = {row[1] for row in cursor.fetchall()}
+
+    # Add missing columns to claims
+    new_cols = {
+        "claim_hash": "TEXT",
+        "source_text_hash": "TEXT",
+        "source_span_json": "TEXT",
+        "extraction_method": "TEXT DEFAULT 'deterministic'",
+        "is_placeholder": "INTEGER DEFAULT 0",
+        "citation_key": "TEXT",
+    }
+    for col, col_type in new_cols.items():
+        if col not in existing_cols:
+            cursor.execute(f"ALTER TABLE claims ADD COLUMN {col} {col_type}")
+
+    # Get existing columns for topic_papers table
+    cursor.execute("PRAGMA table_info(topic_papers)")
+    tp_cols = {row[1] for row in cursor.fetchall()}
+
+    if "llm_relevance_score" not in tp_cols:
+        cursor.execute("ALTER TABLE topic_papers ADD COLUMN llm_relevance_score REAL")
+    if "llm_relevance_reason" not in tp_cols:
+        cursor.execute("ALTER TABLE topic_papers ADD COLUMN llm_relevance_reason TEXT")
+    if "updated_at" not in tp_cols:
+        cursor.execute("ALTER TABLE topic_papers ADD COLUMN updated_at TEXT")
+        cursor.execute("UPDATE topic_papers SET updated_at = created_at WHERE updated_at IS NULL")
+
+    conn.commit()
 
 
 class Storage:
@@ -79,7 +140,9 @@ class Storage:
         self.db_path = db_path
         self.conn = sqlite3.connect(str(db_path))
         self.conn.row_factory = sqlite3.Row
+        self.conn.execute("PRAGMA foreign_keys = ON")
         self.conn.executescript(_SCHEMA)
+        _migrate(self.conn)
 
     def close(self) -> None:
         self.conn.close()
@@ -154,6 +217,35 @@ class Storage:
         for c in claims:
             self.insert_claim(c)
 
+    def upsert_claim_idempotent(self, claim: Claim, extraction_method: str = "deterministic",
+                                 citation_key: str | None = None,
+                                 source_span_json: str | None = None,
+                                 is_placeholder: bool = False) -> bool:
+        """Insert a claim only if it doesn't already exist (idempotent).
+
+        Returns True if inserted, False if already exists.
+        """
+        now = datetime.now(timezone.utc).isoformat()
+        claim_hash = compute_claim_hash(claim)
+        existing = self.conn.execute(
+            "SELECT claim_id FROM claims WHERE claim_hash = ? AND paper_id = ? AND topic = ?",
+            (claim_hash, claim.paper_id, claim.topic),
+        ).fetchone()
+        if existing:
+            return False
+
+        self.conn.execute(
+            """INSERT INTO claims (claim_id, paper_id, claim_text, evidence_type,
+                confidence, source_location, topic, created_at,
+                claim_hash, extraction_method, citation_key, source_span_json, is_placeholder)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (claim.claim_id, claim.paper_id, claim.claim_text, claim.evidence_type,
+             claim.confidence, claim.source_location, claim.topic, claim.created_at or now,
+             claim_hash, extraction_method, citation_key, source_span_json, 1 if is_placeholder else 0),
+        )
+        self.conn.commit()
+        return True
+
     def get_claims_by_topic(self, topic: str) -> list[dict[str, Any]]:
         rows = self.conn.execute(
             "SELECT * FROM claims WHERE topic = ? ORDER BY evidence_type, confidence DESC",
@@ -196,16 +288,27 @@ class Storage:
     def count_links(self) -> int:
         return self.conn.execute("SELECT COUNT(*) FROM paper_links").fetchone()[0]
 
-    def insert_topic_paper(self, topic: str, paper_id: str, source: str = "discover", relevance_score: float = 0.0) -> None:
+    def insert_topic_paper(self, topic: str, paper_id: str, source: str = "discover",
+                           relevance_score: float = 0.0,
+                           llm_relevance_score: float | None = None,
+                           llm_relevance_reason: str | None = None) -> None:
         now = datetime.now(timezone.utc).isoformat()
         self.conn.execute(
-            """INSERT OR REPLACE INTO topic_papers (topic, paper_id, source, relevance_score, created_at)
-            VALUES (?, ?, ?, ?, ?)""",
-            (topic, paper_id, source, relevance_score, now),
+            """INSERT INTO topic_papers (topic, paper_id, source, relevance_score,
+                llm_relevance_score, llm_relevance_reason, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(topic, paper_id) DO UPDATE SET
+                source=excluded.source,
+                relevance_score=excluded.relevance_score,
+                llm_relevance_score=COALESCE(excluded.llm_relevance_score, topic_papers.llm_relevance_score),
+                llm_relevance_reason=COALESCE(excluded.llm_relevance_reason, topic_papers.llm_relevance_reason),
+                updated_at=excluded.updated_at""",
+            (topic, paper_id, source, relevance_score, llm_relevance_score, llm_relevance_reason, now, now),
         )
         self.conn.commit()
 
-    def insert_topic_papers(self, topic: str, paper_ids: list[str], source: str = "discover", scores: list[float] | None = None) -> None:
+    def insert_topic_papers(self, topic: str, paper_ids: list[str], source: str = "discover",
+                            scores: list[float] | None = None) -> None:
         for i, pid in enumerate(paper_ids):
             score = scores[i] if scores and i < len(scores) else 0.0
             self.insert_topic_paper(topic, pid, source, score)
@@ -215,7 +318,7 @@ class Storage:
             """SELECT p.* FROM papers p
             INNER JOIN topic_papers tp ON p.paper_id = tp.paper_id
             WHERE tp.topic = ?
-            ORDER BY tp.relevance_score DESC, p.relevance_score DESC
+            ORDER BY COALESCE(tp.llm_relevance_score, tp.relevance_score) DESC, p.relevance_score DESC
             LIMIT ?""",
             (topic, limit),
         ).fetchall()
@@ -226,3 +329,48 @@ class Storage:
             "SELECT COUNT(*) FROM topic_papers WHERE topic = ?", (topic,)
         ).fetchone()
         return row[0] > 0
+
+    # --- LLM Runs ---
+
+    def insert_llm_run(self, run_id: str, provider: str, task_type: str, input_hash: str,
+                       model: str | None = None, prompt_json: str | None = None,
+                       raw_output: str | None = None, parsed_output_json: str | None = None,
+                       status: str = "pending", error: str | None = None) -> None:
+        now = datetime.now(timezone.utc).isoformat()
+        self.conn.execute(
+            """INSERT INTO llm_runs (run_id, provider, model, task_type, input_hash,
+                prompt_json, raw_output, parsed_output_json, status, error, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (run_id, provider, model, task_type, input_hash,
+             prompt_json, raw_output, parsed_output_json, status, error, now),
+        )
+        self.conn.commit()
+
+    def update_llm_run(self, run_id: str, status: str, raw_output: str | None = None,
+                       parsed_output_json: str | None = None, error: str | None = None) -> None:
+        self.conn.execute(
+            """UPDATE llm_runs SET status = ?, raw_output = COALESCE(?, raw_output),
+                parsed_output_json = COALESCE(?, parsed_output_json), error = COALESCE(?, error)
+            WHERE run_id = ?""",
+            (status, raw_output, parsed_output_json, error, run_id),
+        )
+        self.conn.commit()
+
+    def get_llm_runs(self, task_type: str | None = None, limit: int = 50) -> list[dict[str, Any]]:
+        if task_type:
+            rows = self.conn.execute(
+                "SELECT * FROM llm_runs WHERE task_type = ? ORDER BY created_at DESC LIMIT ?",
+                (task_type, limit),
+            ).fetchall()
+        else:
+            rows = self.conn.execute(
+                "SELECT * FROM llm_runs ORDER BY created_at DESC LIMIT ?", (limit,)
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def compute_claim_hash(claim: Claim) -> str:
+    """Compute a deterministic hash for a claim based on its content."""
+    normalized = " ".join(claim.claim_text.lower().split())
+    raw = f"{claim.paper_id}:{claim.topic or ''}:{claim.evidence_type}:{normalized}:{claim.source_location}"
+    return hashlib.sha256(raw.encode()).hexdigest()[:16]

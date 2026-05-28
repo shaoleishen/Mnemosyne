@@ -25,6 +25,29 @@ def _settings(data_dir: str | None, vault_dir: str | None):
     return Settings(**kwargs)
 
 
+def _get_llm_provider(settings, use_llm: bool | None = None):
+    """Get LLM provider based on settings and CLI flag."""
+    from knowcran.config import Settings
+    from knowcran.llm.factory import create_provider
+
+    if use_llm is False:
+        return None
+    if use_llm is True:
+        # Force LLM on even if default is none
+        if settings.llm_provider == "none":
+            settings = Settings(
+                data_dir=settings.data_dir,
+                vault_dir=settings.vault_dir,
+                llm_provider="claw",
+                claw_bin=settings.claw_bin,
+                claw_model=settings.claw_model,
+                claw_permission_mode=settings.claw_permission_mode,
+                claw_timeout_seconds=settings.claw_timeout_seconds,
+                claw_max_retries=settings.claw_max_retries,
+            )
+    return create_provider(settings)
+
+
 @app.callback()
 def _global_options(
     data_dir: str | None = typer.Option(None, "--data-dir", help="Data directory path"),
@@ -54,6 +77,7 @@ def discover(
     expand: bool = typer.Option(False, help="Expand via references/citations/recommendations"),
     data_dir: str | None = typer.Option(None, "--data-dir", help="Data directory path"),
     vault_dir: str | None = typer.Option(None, "--vault-dir", help="Vault directory path"),
+    llm: bool | None = typer.Option(None, "--llm/--no-llm", help="Enable/disable LLM reranking"),
 ) -> None:
     """Search Semantic Scholar and store papers."""
     settings = _settings(data_dir, vault_dir)
@@ -62,7 +86,8 @@ def discover(
     from knowcran.storage import Storage
     client = SemanticScholarClient(api_key=settings.s2_api_key, rate_limit=settings.rate_limit_seconds, raw_dir=settings.raw_dir)
     storage = Storage(db_path=settings.db_path)
-    papers = do_discover(question, limit=limit, expand=expand, client=client, storage=storage)
+    provider = _get_llm_provider(settings, llm)
+    papers = do_discover(question, limit=limit, expand=expand, client=client, storage=storage, llm_provider=provider)
     console.print(f"[green]Discovered {len(papers)} papers.[/green]")
 
 
@@ -90,13 +115,15 @@ def read_topic_cmd(
     topic: str = typer.Argument(help="Topic to read"),
     limit: int = typer.Option(20, help="Max papers to process"),
     data_dir: str | None = typer.Option(None, "--data-dir", help="Data directory path"),
+    llm: bool | None = typer.Option(None, "--llm/--no-llm", help="Enable/disable LLM extraction"),
 ) -> None:
     """Extract claims from all papers matching a topic."""
     settings = _settings(data_dir, None)
     from knowcran.reading import read_topic
     from knowcran.storage import Storage
     storage = Storage(db_path=settings.db_path)
-    claims = read_topic(topic, limit=limit, storage=storage)
+    provider = _get_llm_provider(settings, llm)
+    claims = read_topic(topic, limit=limit, storage=storage, llm_provider=provider)
     console.print(f"[green]Extracted {len(claims)} claims from topic papers.[/green]")
 
 
@@ -121,13 +148,15 @@ def review(
     max_papers: int = typer.Option(20, help="Max papers for review"),
     data_dir: str | None = typer.Option(None, "--data-dir", help="Data directory path"),
     vault_dir: str | None = typer.Option(None, "--vault-dir", help="Vault directory path"),
+    llm: bool | None = typer.Option(None, "--llm/--no-llm", help="Enable/disable LLM review synthesis"),
 ) -> None:
     """Generate a literature review from stored claims."""
     settings = _settings(data_dir, vault_dir)
     from knowcran.review import review as do_review
     from knowcran.storage import Storage
     storage = Storage(db_path=settings.db_path)
-    output = do_review(topic, max_papers=max_papers, storage=storage, vault_dir=settings.vault_dir)
+    provider = _get_llm_provider(settings, llm)
+    output = do_review(topic, max_papers=max_papers, storage=storage, vault_dir=settings.vault_dir, llm_provider=provider)
     console.print(f"[green]Review generated with {len(output.evidence_matrix)} evidence items and {len(output.paper_ids)} papers.[/green]")
 
 
@@ -173,6 +202,53 @@ def stats(
             console.print(f"Links:   {links}")
     finally:
         storage.close()
+
+
+@app.command("llm-doctor")
+def llm_doctor(
+    data_dir: str | None = typer.Option(None, "--data-dir", help="Data directory path"),
+    live: bool = typer.Option(False, "--live", help="Run a live one-shot prompt test (uses API credits)"),
+) -> None:
+    """Check LLM provider configuration and connectivity."""
+    from knowcran.config import Settings
+    from knowcran.llm.factory import create_provider
+
+    settings = _settings(data_dir, None)
+
+    console.print(f"[bold]LLM Provider:[/bold] {settings.llm_provider}")
+    console.print(f"[bold]Claw Model:[/bold] {settings.claw_model}")
+    console.print(f"[bold]Claw Permission Mode:[/bold] {settings.claw_permission_mode}")
+    console.print(f"[bold]Claw Timeout:[/bold] {settings.claw_timeout_seconds}s")
+    console.print(f"[bold]Claw Max Retries:[/bold] {settings.claw_max_retries}")
+
+    if settings.llm_provider == "none":
+        console.print("[yellow]LLM provider is set to 'none'. No LLM features will be used.[/yellow]")
+        console.print("Set MNEMOSYNE_LLM_PROVIDER=claw to enable LLM features.")
+        return
+
+    if settings.claw_bin:
+        from pathlib import Path
+        exists = Path(settings.claw_bin).exists()
+        console.print(f"[bold]Claw Binary:[/bold] {settings.claw_bin}")
+        if exists:
+            console.print("[green]  Binary exists.[/green]")
+        else:
+            console.print("[red]  Binary NOT found![/red]")
+    else:
+        console.print("[red]No Claw binary detected![/red]")
+        console.print("Set MNEMOSYNE_CLAW_BIN or ensure claw is on PATH.")
+
+    if live:
+        console.print("\n[bold]Running live test...[/bold]")
+        try:
+            provider = create_provider(settings)
+            if provider is None:
+                console.print("[yellow]Provider is None, cannot test.[/yellow]")
+                return
+            result = provider.call("Reply with the word READY and nothing else.", task_type="health_check")
+            console.print(f"[green]Live test succeeded. Response: {str(result)[:200]}[/green]")
+        except Exception as e:
+            console.print(f"[red]Live test failed: {e}[/red]")
 
 
 def main() -> None:

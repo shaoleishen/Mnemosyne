@@ -95,6 +95,80 @@ def _build_review_text(topic: str, papers: list[dict[str, Any]], claims: list[di
     return text
 
 
+def _build_review_text_from_llm(
+    topic: str,
+    papers: list[dict[str, Any]],
+    llm_output: dict[str, Any],
+) -> str:
+    """Render Markdown from validated LLM review synthesis output."""
+    paper_map = {p["paper_id"]: p for p in papers}
+
+    def _render_section(items: list[dict[str, Any]]) -> str:
+        if not items:
+            return "Needs evidence.\n"
+        lines = []
+        for item in items:
+            text = item.get("text", "")
+            citations = item.get("citations", [])
+            if citations:
+                cite_str = " ".join(f"[@{c}]" for c in citations)
+                lines.append(f"- {text} {cite_str}")
+            else:
+                lines.append(f"- {text}")
+        return "\n".join(lines) + "\n"
+
+    title = llm_output.get("title", f"Literature Review: {topic}")
+    text = f"# {title}\n\n"
+    text += f"Based on analysis of {len(papers)} papers from the KnowCran knowledge base.\n\n"
+
+    sections = [
+        ("Background", llm_output.get("background", [])),
+        ("Main Evidence", llm_output.get("main_evidence", [])),
+        ("Methods And Models", llm_output.get("methods_and_models", [])),
+        ("Limitations", llm_output.get("limitations", [])),
+        ("Open Questions", llm_output.get("open_questions", [])),
+    ]
+
+    for section_name, items in sections:
+        text += f"## {section_name}\n\n"
+        text += _render_section(items)
+        text += "\n"
+
+    # Add warnings if any
+    warnings = llm_output.get("warnings", [])
+    if warnings:
+        text += "## Warnings\n\n"
+        for w in warnings:
+            text += f"- {w}\n"
+        text += "\n"
+
+    # References section
+    text += "## References\n\n"
+    for p in papers:
+        doi = p.get("doi", "")
+        doi_str = f" DOI: {doi}" if doi else ""
+        key = citation_key(p)
+        text += f"- `@{key}`: {p['title']} ({p.get('year', 'N/A')}). {p.get('venue', '')}{doi_str}\n"
+
+    return text
+
+
+def _validate_review_citations(llm_output: dict[str, Any], valid_keys: set[str]) -> list[str]:
+    """Validate that all citation keys in LLM review output exist in the selected paper set.
+
+    Returns list of invalid citation keys found.
+    """
+    invalid_keys: list[str] = []
+    sections = ["background", "main_evidence", "methods_and_models", "limitations", "open_questions"]
+    for section in sections:
+        items = llm_output.get(section, [])
+        for item in items:
+            for cite_key in item.get("citations", []):
+                if cite_key not in valid_keys:
+                    invalid_keys.append(cite_key)
+    return invalid_keys
+
+
 def _build_evidence_matrix(papers: list[dict[str, Any]], claims: list[dict[str, Any]]) -> list[EvidenceMatrixRow]:
     paper_map = {p["paper_id"]: p for p in papers}
     rows: list[EvidenceMatrixRow] = []
@@ -133,7 +207,13 @@ def _build_open_questions(claims: list[dict[str, Any]]) -> str:
     return text
 
 
-def review(topic: str, max_papers: int = 20, storage: Storage | None = None, vault_dir: Path = VAULT_DIR) -> ReviewOutput:
+def review(
+    topic: str,
+    max_papers: int = 20,
+    storage: Storage | None = None,
+    vault_dir: Path = VAULT_DIR,
+    llm_provider: Any | None = None,
+) -> ReviewOutput:
     own = storage is None
     storage = storage or Storage()
     try:
@@ -149,7 +229,32 @@ def review(topic: str, max_papers: int = 20, storage: Storage | None = None, vau
         ]
         paper_ids = [p["paper_id"] for p in papers]
 
-        review_text = _build_review_text(topic, papers, claims)
+        # Try LLM review synthesis if provider available
+        review_text = None
+        if llm_provider is not None:
+            try:
+                from knowcran.llm.prompts import build_review_prompt
+                from knowcran.llm.schemas import ReviewSynthesisOutput
+
+                prompt = build_review_prompt(topic, papers, claims)
+                result = llm_provider.call(prompt, task_type="review_synthesis")
+                parsed = ReviewSynthesisOutput.model_validate(result)
+
+                # Validate citation keys
+                valid_keys = {citation_key(p) for p in papers}
+                invalid_keys = _validate_review_citations(result, valid_keys)
+                if invalid_keys:
+                    # LLM used invalid citation keys - fall back to deterministic
+                    raise ValueError(f"LLM used invalid citation keys: {invalid_keys}")
+
+                review_text = _build_review_text_from_llm(topic, papers, result)
+            except Exception:
+                review_text = None  # Fall back to deterministic
+
+        # Fallback to deterministic review
+        if review_text is None:
+            review_text = _build_review_text(topic, papers, claims)
+
         matrix = _build_evidence_matrix(papers, claims)
         csv_text = _write_csv(matrix, claims)
         bibtex = papers_to_bibtex(papers)

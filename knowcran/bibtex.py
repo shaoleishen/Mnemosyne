@@ -22,14 +22,24 @@ def paper_to_bibtex(paper: dict[str, Any]) -> str:
     authors = ""
     try:
         authors_list = json.loads(paper.get("authors_json") or "[]")
-        authors = " and ".join(_escape_bibtex(a.get("name", "")) for a in authors_list[:5])
-    except Exception:
+        if authors_list:
+            names = []
+            for a in authors_list[:5]:
+                name = a.get("name", "").strip()
+                if name:
+                    names.append(_escape_bibtex(name))
+            authors = " and ".join(names)
+    except (json.JSONDecodeError, TypeError):
         pass
 
     title = _escape_bibtex(paper.get("title", "") or "")
     year = paper.get("year") or ""
     journal = _escape_bibtex(paper.get("venue", "") or "")
     doi = paper.get("doi") or ""
+    # Don't write "None" as a DOI string
+    if doi.lower() in ("none", "null"):
+        doi = ""
+    url = paper.get("url") or ""
 
     lines = [f"@article{{{key},"]
     if title:
@@ -41,7 +51,12 @@ def paper_to_bibtex(paper: dict[str, Any]) -> str:
     if journal:
         lines.append(f"  journal = {{{journal}}},")
     if doi:
-        lines.append(f"  doi = {{{doi}}}")
+        lines.append(f"  doi = {{{doi}}},")
+    if url:
+        lines.append(f"  url = {{{url}}}")
+    # Remove trailing comma from last field
+    if lines[-1].endswith(","):
+        lines[-1] = lines[-1][:-1]
     lines.append("}")
     return "\n".join(lines)
 

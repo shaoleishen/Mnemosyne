@@ -66,6 +66,11 @@ def relevance_score(
         if any(f.lower() in bio_terms for f in fields_of_study):
             bio_bonus = 0.15
 
+    # Tangential/distractor penalty: high citation but low topic relevance
+    tangential_penalty = 0.0
+    if citation_count and citation_count > 500 and title_overlap < 0.3 and exact_title_boost == 0:
+        tangential_penalty = 0.2
+
     # Citation and recency
     citation_score = log1p(citation_count or 0) / 10.0
     current_year = current_year or datetime.now().year
@@ -82,6 +87,7 @@ def relevance_score(
         + recency * 0.05
         + oa_bonus * 0.05
         - no_abstract_penalty
+        - tangential_penalty
     )
     return round(max(0, score), 4)
 

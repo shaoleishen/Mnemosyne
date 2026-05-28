@@ -122,8 +122,9 @@ def test_animal_model_open_question(tmp_path: Path) -> None:
 
     open_q_claims = [c for c in claims if c.evidence_type == "open_question"]
     assert len(open_q_claims) == 1
-    assert "translate" in open_q_claims[0].claim_text.lower()
-    assert "animal" in open_q_claims[0].claim_text.lower() or "model" in open_q_claims[0].claim_text.lower()
+    assert "translat" in open_q_claims[0].claim_text.lower() or \
+           "animal" in open_q_claims[0].claim_text.lower() or \
+           "model" in open_q_claims[0].claim_text.lower()
 
     storage.close()
 

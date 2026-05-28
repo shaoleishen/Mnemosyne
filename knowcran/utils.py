@@ -106,6 +106,57 @@ def paper_note_stem(paper: dict[str, Any]) -> str:
     return f"{paper.get('year', 'unknown')}_{slugify(paper['title'])}"
 
 
+def classify_topic_role(title: str, abstract: str, topic: str) -> str:
+    """Classify a paper's role relative to a topic.
+
+    Returns one of:
+    - primary_topic: topic is the main subject
+    - secondary_topic: topic is a significant secondary subject
+    - risk_or_complication: topic appears as a risk/complication/outcome
+    - mentions_only: topic is only briefly mentioned
+    - irrelevant: topic not found
+    """
+    title_lower = (title or "").lower()
+    abstract_lower = (abstract or "").lower()
+    topic_lower = topic.lower()
+
+    # Count topic occurrences
+    title_count = title_lower.count(topic_lower)
+    abstract_count = abstract_lower.count(topic_lower)
+
+    # Check if topic words appear in title
+    topic_words = set(topic_lower.split())
+    title_word_hits = sum(1 for w in topic_words if w in title_lower)
+
+    # Primary: topic is in title and appears multiple times in abstract
+    if title_count > 0 and abstract_count >= 2:
+        return "primary_topic"
+
+    # Primary: topic words dominate the title
+    if title_word_hits >= len(topic_words) * 0.7 and abstract_count >= 1:
+        return "primary_topic"
+
+    # Secondary: topic appears in abstract but not title, or appears moderately
+    if abstract_count >= 3:
+        return "secondary_topic"
+
+    # Risk/complication: topic appears 1-2 times in abstract, often with risk/complication language
+    risk_terms = {"risk", "complication", "outcome", "adverse", "associated", "mortality", "morbidity"}
+    if abstract_count >= 1:
+        has_risk_context = any(t in abstract_lower for t in risk_terms)
+        if has_risk_context and abstract_count <= 2:
+            return "risk_or_complication"
+        if abstract_count >= 2:
+            return "secondary_topic"
+        return "mentions_only"
+
+    # Title mentions but abstract doesn't elaborate
+    if title_count > 0:
+        return "mentions_only"
+
+    return "irrelevant"
+
+
 def citation_key(paper: dict[str, Any]) -> str:
     authors_str = ""
     try:

@@ -174,5 +174,5 @@ class TestDeterministicExtraction:
         claims = _extract_claims(paper, "ICH")
         open_qs = [c for c in claims if c.evidence_type == "open_question"]
         assert len(open_qs) > 0
-        assert any("animal" in q.claim_text.lower() or "model" in q.claim_text.lower()
-                    or "translate" in q.claim_text.lower() for q in open_qs)
+        assert any("translat" in q.claim_text.lower() or "animal" in q.claim_text.lower()
+                    or "model" in q.claim_text.lower() for q in open_qs)

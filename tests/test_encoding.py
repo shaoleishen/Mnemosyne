@@ -89,3 +89,32 @@ def test_review_text_preserves_unicode(tmp_path: Path) -> None:
     assert "≥" in output.review_text or "–" in output.review_text
 
     storage.close()
+
+
+def test_chinese_characters_preserved(tmp_path: Path) -> None:
+    """Chinese characters in paper titles must be preserved."""
+    vault_dir = tmp_path / "vault"
+    db_path = tmp_path / "test.sqlite"
+    storage = Storage(db_path=db_path)
+
+    paper = PaperRecord(
+        paper_id="p-chinese",
+        title="脑出血的治疗进展",  # Chinese: Treatment progress of intracerebral hemorrhage
+        abstract="本文综述了脑出血的最新治疗进展。",  # Chinese abstract
+        year=2024,
+        venue="中华神经科杂志",
+        discovered_by="keyword_search",
+    )
+    storage.upsert_paper(paper)
+    storage.insert_topic_paper("intracerebral hemorrhage", "p-chinese")
+
+    counts = export_obsidian("intracerebral hemorrhage", storage=storage, vault_dir=vault_dir)
+    assert counts["papers"] == 1
+
+    # Read back and verify Chinese is preserved
+    paper_files = list((vault_dir / "papers").glob("*.md"))
+    content = paper_files[0].read_text(encoding="utf-8")
+    assert "脑出血" in content
+    assert "中华神经科杂志" in content
+
+    storage.close()

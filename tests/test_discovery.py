@@ -117,7 +117,7 @@ def test_limit_is_total_not_per_query(tmp_path: Path) -> None:
 
 
 def test_tangential_high_citation_demoted(tmp_path: Path) -> None:
-    """A tangential high-citation paper should rank below a strong ICH paper."""
+    """A tangential high-citation paper should be filtered out or rank below a strong ICH paper."""
     db_path = tmp_path / "test.sqlite"
     storage = Storage(db_path=db_path)
 
@@ -127,14 +127,13 @@ def test_tangential_high_citation_demoted(tmp_path: Path) -> None:
 
     papers = discover("intracerebral hemorrhage", limit=5, client=client, storage=storage)
 
-    # The best ICH paper should rank higher than the tangential leukemia paper
+    # The best ICH paper should be in results
     paper_ids = [p.paper_id for p in papers]
-    best_idx = paper_ids.index("best-ich")
-    tangential_idx = paper_ids.index("tangential-2")
+    assert "best-ich" in paper_ids, "Best ICH paper must be retained"
 
-    assert best_idx < tangential_idx, (
-        f"Best ICH paper (index {best_idx}) should rank above tangential leukemia paper (index {tangential_idx})"
-    )
+    # Tangential papers with very low relevance should be filtered out
+    # (leukemia paper has no ICH content, score < 0.15)
+    assert "tangential-2" not in paper_ids, "Tangential leukemia paper should be filtered out"
 
     storage.close()
 
@@ -146,12 +145,14 @@ def test_dedup_removes_duplicates(tmp_path: Path) -> None:
 
     client = MagicMock()
     # Return the same papers for every query - should dedup
-    client.search_bulk.return_value = _ICH_SEARCH_RESULTS[:3]
+    # Use only the ICH-relevant papers (score >= 0.15)
+    client.search_bulk.return_value = _ICH_SEARCH_RESULTS[2:]  # best-ich, old-ich, developing-topics
     client.close.return_value = None
 
     papers = discover("intracerebral hemorrhage", limit=10, client=client, storage=storage)
 
-    # Should have exactly 3 unique papers despite 5 queries
-    assert len(papers) == 3, f"Expected 3 unique papers, got {len(papers)}"
+    # Should have 2 unique ICH-relevant papers (best-ich and old-ich have score >= 0.15)
+    # developing-topics has score 0.06 which is below threshold
+    assert len(papers) == 2, f"Expected 2 unique papers, got {len(papers)}"
 
     storage.close()

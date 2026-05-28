@@ -96,6 +96,12 @@ CREATE TABLE IF NOT EXISTS llm_runs (
     created_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS topic_aliases (
+    alias TEXT PRIMARY KEY,
+    canonical_topic TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS agent_runs (
     run_id TEXT PRIMARY KEY,
     provider TEXT NOT NULL,
@@ -347,6 +353,63 @@ class Storage:
             "SELECT COUNT(*) FROM topic_papers WHERE topic = ?", (topic,)
         ).fetchone()
         return row[0] > 0
+
+    def resolve_topic(self, topic: str) -> str:
+        """Resolve a topic alias to its canonical topic.
+
+        If the topic has no alias, returns the topic itself.
+        Also checks if the topic is a substring of any existing topic_papers entry.
+        """
+        # Check direct alias
+        row = self.conn.execute(
+            "SELECT canonical_topic FROM topic_aliases WHERE alias = ?", (topic,)
+        ).fetchone()
+        if row:
+            return row[0]
+
+        # Check if topic is a canonical topic
+        row = self.conn.execute(
+            "SELECT COUNT(*) FROM topic_papers WHERE topic = ?", (topic,)
+        ).fetchone()
+        if row[0] > 0:
+            return topic
+
+        # Try substring matching: find topics that contain this topic or vice versa
+        rows = self.conn.execute(
+            "SELECT DISTINCT topic FROM topic_papers WHERE topic LIKE ? OR ? LIKE '%' || topic || '%'",
+            (f"%{topic}%", topic),
+        ).fetchall()
+        if rows:
+            # Return the shortest matching topic (most specific)
+            topics = [r[0] for r in rows]
+            return min(topics, key=len)
+
+        return topic
+
+    def add_topic_alias(self, alias: str, canonical_topic: str) -> None:
+        """Add a topic alias mapping."""
+        now = datetime.now(timezone.utc).isoformat()
+        self.conn.execute(
+            """INSERT OR REPLACE INTO topic_aliases (alias, canonical_topic, created_at)
+            VALUES (?, ?, ?)""",
+            (alias, canonical_topic, now),
+        )
+        self.conn.commit()
+
+    def get_canonical_topics(self) -> list[str]:
+        """Get all canonical topics that have papers."""
+        rows = self.conn.execute(
+            "SELECT DISTINCT topic FROM topic_papers ORDER BY topic"
+        ).fetchall()
+        return [r[0] for r in rows]
+
+    def get_topic_aliases(self, canonical_topic: str) -> list[str]:
+        """Get all aliases for a canonical topic."""
+        rows = self.conn.execute(
+            "SELECT alias FROM topic_aliases WHERE canonical_topic = ?",
+            (canonical_topic,),
+        ).fetchall()
+        return [r[0] for r in rows]
 
     # --- LLM Runs ---
 

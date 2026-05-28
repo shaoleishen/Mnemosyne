@@ -75,12 +75,23 @@ tags:
 
 def _claim_note(claim: dict[str, Any], paper_note_map: dict[str, str] | None = None) -> str:
     extraction_method = claim.get("extraction_method", "deterministic")
+    topic = claim.get("topic", "")
+    claim_hash = claim.get("claim_hash", "")
+    source_location = claim.get("source_location", "")
+    citation_key = claim.get("citation_key", "")
+    is_placeholder = claim.get("is_placeholder", 0)
+
     yaml = f"""---
 claim_id: {claim['claim_id']}
 paper_id: {claim['paper_id']}
 evidence_type: {claim['evidence_type']}
 confidence: {claim['confidence']}
+topic: "{topic}"
+claim_hash: "{claim_hash}"
+source_location: "{source_location}"
+citation_key: "{citation_key}"
 extraction_method: {extraction_method}
+is_placeholder: {is_placeholder}
 tags:
   - claim
   - {claim['evidence_type']}
@@ -92,6 +103,8 @@ tags:
         body += f"**Source**: [[{stem}]]\n"
     else:
         body += f"**Source**: [[{claim['paper_id']}]]\n"
+    if citation_key:
+        body += f"**Citation Key**: `{citation_key}`\n"
     return yaml + body
 
 
@@ -123,8 +136,13 @@ def export_obsidian(topic: str, storage: Storage | None = None, vault_dir: Path 
     own = storage is None
     storage = storage or Storage()
     try:
+        # Resolve topic aliases
+        resolved_topic = storage.resolve_topic(topic)
+
         # Use explicit topic membership if available, fall back to text search
-        if storage.has_topic_papers(topic):
+        if storage.has_topic_papers(resolved_topic):
+            papers = storage.get_topic_papers(resolved_topic, limit=100)
+        elif storage.has_topic_papers(topic):
             papers = storage.get_topic_papers(topic, limit=100)
         else:
             papers = storage.get_papers_by_topic(topic, limit=100)

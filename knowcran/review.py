@@ -31,7 +31,12 @@ def _build_review_text(topic: str, papers: list[dict[str, Any]], claims: list[di
         return f"[@{keys.get(paper_id, paper_id)}]"
 
     text = f"# Literature Review: {topic}\n\n"
-    text += f"Based on analysis of {len(papers)} papers from the KnowCran knowledge base.\n\n"
+    text += f"Based on analysis of {len(papers)} papers and {len(claims)} claims from the KnowCran knowledge base.\n\n"
+
+    # Invariant: if we have claims, at least one section must have evidence
+    has_any_evidence = any(len(v) > 0 for v in groups.values())
+    if claims and not has_any_evidence:
+        text += "> **Warning**: Claims exist but could not be grouped by evidence type. This may indicate a schema mismatch.\n\n"
 
     text += "## Background\n\n"
     summaries = groups.get("abstract_summary", [])
@@ -93,6 +98,28 @@ def _build_review_text(topic: str, papers: list[dict[str, Any]], claims: list[di
         text += f"- `@{key}`: {p['title']} ({p.get('year', 'N/A')}). {p.get('venue', '')}{doi_str}\n"
 
     return text
+
+
+def _add_review_metadata(text: str, topic: str, papers: list[dict[str, Any]], claims: list[dict[str, Any]], provider: str = "deterministic") -> str:
+    """Add run metadata header to review text."""
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+    evidence_types: dict[str, int] = {}
+    for c in claims:
+        et = c.get("evidence_type", "unknown")
+        evidence_types[et] = evidence_types.get(et, 0) + 1
+
+    meta = f"""---
+generated_at: {now}
+topic: "{topic}"
+paper_count: {len(papers)}
+claim_count: {len(claims)}
+provider: {provider}
+evidence_types: {evidence_types}
+---
+
+"""
+    return meta + text
 
 
 def _build_review_text_from_llm(
@@ -263,8 +290,13 @@ def review(
     own = storage is None
     storage = storage or Storage()
     try:
+        # Resolve topic aliases
+        resolved_topic = storage.resolve_topic(topic)
+
         # Use explicit topic membership if available, fall back to text search
-        if storage.has_topic_papers(topic):
+        if storage.has_topic_papers(resolved_topic):
+            papers = storage.get_topic_papers(resolved_topic, limit=max_papers)
+        elif storage.has_topic_papers(topic):
             papers = storage.get_topic_papers(topic, limit=max_papers)
         else:
             papers = storage.get_papers_by_topic(topic, limit=max_papers)
@@ -302,6 +334,14 @@ def review(
         # Fallback to deterministic review
         if review_text is None:
             review_text = _build_review_text(topic, papers, claims)
+
+        # Add metadata to review text
+        provider_name = "deterministic"
+        if agent_provider:
+            provider_name = agent_provider.name
+        elif llm_provider:
+            provider_name = "llm"
+        review_text = _add_review_metadata(review_text, topic, papers, claims, provider_name)
 
         matrix = _build_evidence_matrix(papers, claims)
         csv_text = _write_csv(matrix, claims)

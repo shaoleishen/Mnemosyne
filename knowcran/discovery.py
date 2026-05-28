@@ -87,9 +87,14 @@ def discover(
         deduped = _deduplicate(all_papers)
         console.print(f"  Found {len(all_papers)} raw, {len(deduped)} unique")
 
-        ranked = _rank(deduped, question)[:limit]
+        ranked = _rank(deduped, question)
         for r in ranked:
             r.discovered_by = "keyword_search"
+
+        # Filter out papers with very low relevance (tangential/irrelevant)
+        min_score_threshold = 0.15
+        ranked = [r for r in ranked if r.relevance_score >= min_score_threshold]
+        ranked = ranked[:limit]
 
         # Optional agent/LLM reranking
         if agent_provider is not None:
@@ -104,6 +109,18 @@ def discover(
             source="discover",
             scores=[p.relevance_score for p in ranked],
         )
+
+        # Store topic alias if this is a subtopic query
+        # e.g., "intracerebral hemorrhage anticoagulation reversal" -> "intracerebral hemorrhage"
+        words = question.lower().split()
+        if len(words) > 2:
+            # Try to find a canonical topic that is a prefix of this query
+            canonical_topics = storage.get_canonical_topics()
+            for ct in canonical_topics:
+                if question.startswith(ct) and question != ct:
+                    storage.add_topic_alias(question, ct)
+                    break
+
         console.print(f"  Saved {len(ranked)} papers to database")
 
         if expand:

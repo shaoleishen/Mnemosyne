@@ -17,19 +17,36 @@ def _deterministic_claim_id(paper_id: str, topic: str | None, evidence_type: str
     return hashlib.sha256(raw.encode()).hexdigest()[:16]
 
 _METHOD_TERMS = re.compile(
-    r"\b(method|model|cohort|trial|assay|dataset|experiment|sample|analysis|design|randomized|controlled)\b",
+    r"\b(we (conducted|performed|used|employed|applied|collected|recruited|enrolled|randomized|assigned)|"
+    r"study (design|population|protocol|procedure)|"
+    r"(prospective|retrospective|randomized|controlled|double-blind|placebo-controlled) (study|trial|cohort)|"
+    r"(cohort|trial|assay|experiment|survey|questionnaire) (of|with|including|involving)|"
+    r"(sample|dataset|data) (of|from|including|consisting)|"
+    r"(patients?|subjects?|participants?) (were|was|are|is) (enrolled|recruited|selected|included|divided|randomized)|"
+    r"(intervention|treatment|procedure|protocol) (was|were|is|are) (administered|applied|performed|used))\b",
     re.IGNORECASE,
 )
 _STRONG_RESULT_TERMS = re.compile(
-    r"\b(significant|demonstrate|found|increased|decreased|show)\b",
+    r"\b(significantly?|demonstrate[sd]?|found that|show[s]? that|increased|decreased|improved|reduced|"
+    r"higher|lower|greater|fewer|better|worse|associated with|correlated with|"
+    r"mortality was|survival was|outcome[s]? (was|were|showed|demonstrated)|"
+    r"the results? (showed|demonstrated|indicated|revealed|suggested)|"
+    r"we found|our (results?|findings?) (showed|demonstrated|indicated|suggested))\b",
     re.IGNORECASE,
 )
 _SUGGESTIVE_RESULT_TERMS = re.compile(
-    r"\b(suggest|indicate|associated|correlate|reveal|observed)\b",
+    r"\b(suggest[sd]?|indicate[sd]?|associate[sd]?|correlate[sd]?|reveal[sd]?|observed|"
+    r"appear[sd]? to|tend[sd]? to|may (be|have|play|contribute|represent))\b",
     re.IGNORECASE,
 )
 _LIMITATION_TERMS = re.compile(
-    r"\b(limitation|limitation|weakness|caveat|however|although|small sample|further research|preliminary)\b",
+    r"\b(limitation[s]?|weakness[es]?|caveat[s]?|"
+    r"(however|although|despite|notwithstanding),?\s+(this|our|the|these)|"
+    r"small (sample|cohort|number|study)|"
+    r"further (research|studies|investigation|work) (is|are|was|were)? needed|"
+    r"preliminary (results?|findings?|data)|"
+    r"should be (interpreted|cautiously|viewed) (with|cautiously|carefully)|"
+    r"this study (has|have|had) (several|some|a few|a number of) limitations?)\b",
     re.IGNORECASE,
 )
 
@@ -140,22 +157,32 @@ def _extract_claims(paper: dict[str, Any], topic: str | None = None) -> list[Cla
             topic=topic,
         ))
 
-    # open_question - biomedical-aware
+    # open_question - biomedical-aware, paper-specific
     questions: list[str] = []
-    if not method_sents:
-        questions.append("What specific methodology was used in this study?")
-    if not strong_sents and not suggestive_sents:
-        questions.append("What were the key findings and effect sizes?")
 
     # Check if this is an animal/model study
     is_animal_model = bool(_ANIMAL_MODEL_TERMS.search(cleaned))
 
-    if is_animal_model:
-        if not any("population" in s.lower() or "patient" in s.lower() or "subject" in s.lower() for s in sentences):
-            questions.append("How well does this animal/model finding translate to human disease?")
-    else:
-        if not any("population" in s.lower() or "patient" in s.lower() or "subject" in s.lower() for s in sentences):
-            questions.append("What population or cohort was studied?")
+    # Only add questions if the abstract doesn't already answer them
+    has_population = any(w in cleaned.lower() for w in ["population", "patient", "subject", "participant", "cohort", "n="])
+    has_methodology = bool(method_sents)
+    has_results = bool(strong_sents or suggestive_sents)
+
+    # Generate paper-specific open questions
+    if is_animal_model and not has_population:
+        questions.append(f"What is the translational relevance of these findings to human {topic or 'disease'}?")
+    elif not has_population and not has_methodology:
+        questions.append(f"What study population and methodology were used to investigate {topic or 'this question'}?")
+
+    # Ask about generalizability if study seems limited
+    if any(w in cleaned.lower() for w in ["single center", "single-centre", "retrospective", "small sample", "pilot"]):
+        questions.append(f"Are these findings generalizable to broader {topic or ''} populations?")
+
+    # Ask about long-term outcomes if only short-term mentioned
+    if any(w in cleaned.lower() for w in ["30-day", "acute", "short-term", "in-hospital"]) and \
+       not any(w in cleaned.lower() for w in ["long-term", "1-year", "follow-up", "chronic"]):
+        questions.append("What are the long-term outcomes beyond the acute phase?")
+
     if questions:
         question_text = "; ".join(questions)
         claims.append(Claim(
@@ -193,8 +220,16 @@ def read_topic(topic: str, limit: int = 20, storage: Storage | None = None,
     own = storage is None
     storage = storage or Storage()
     try:
+        # Resolve topic aliases
+        resolved_topic = storage.resolve_topic(topic)
+        if resolved_topic != topic:
+            from rich.console import Console
+            Console().print(f"  [dim]Resolved topic '{topic}' -> '{resolved_topic}'[/dim]")
+
         # Use explicit topic membership if available, fall back to text search
-        if storage.has_topic_papers(topic):
+        if storage.has_topic_papers(resolved_topic):
+            papers = storage.get_topic_papers(resolved_topic, limit=limit)
+        elif storage.has_topic_papers(topic):
             papers = storage.get_topic_papers(topic, limit=limit)
         else:
             papers = storage.get_papers_by_topic(topic, limit=limit)

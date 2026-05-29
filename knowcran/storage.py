@@ -166,6 +166,8 @@ def _migrate(conn: sqlite3.Connection) -> None:
         "extraction_method": "TEXT DEFAULT 'deterministic'",
         "is_placeholder": "INTEGER DEFAULT 0",
         "citation_key": "TEXT",
+        "evidence_status": "TEXT DEFAULT 'abstract_only'",
+        "source_quote": "TEXT",
     }
     for col, col_type in new_cols.items():
         if col not in existing_cols:

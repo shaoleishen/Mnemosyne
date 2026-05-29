@@ -454,9 +454,23 @@ def topics_list(
 
 @app.command("serve-mcp")
 def serve_mcp_cmd() -> None:
-    """Start MCP server for Claude Code and other MCP clients."""
+    """Start MCP server with all tools (read + write + audit). Backward compat alias."""
     from knowcran.server.mcp import serve_mcp
     serve_mcp()
+
+
+@app.command("serve-mcp-readonly")
+def serve_mcp_readonly_cmd() -> None:
+    """Start read-only MCP server (safe for long-running connections). No network, no writes."""
+    from knowcran.server.mcp import serve_mcp_readonly
+    serve_mcp_readonly()
+
+
+@app.command("serve-mcp-curate")
+def serve_mcp_curate_cmd() -> None:
+    """Start curate MCP server (all tools including discover/review/export). Requires approval."""
+    from knowcran.server.mcp import serve_mcp_curate
+    serve_mcp_curate()
 
 
 def main() -> None:

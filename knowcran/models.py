@@ -85,6 +85,10 @@ class Claim(BaseModel):
     confidence: float = 0.5
     source_location: str = "abstract"
     topic: str | None = None
+    citation_key: str | None = None
+    evidence_status: str = "abstract_only"  # metadata_only, abstract_only, full_text_reviewed, direct_evidence
+    source_quote: str | None = None
+    source_span_json: str | None = None
     created_at: str = ""
 
 

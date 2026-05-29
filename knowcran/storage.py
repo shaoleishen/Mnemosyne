@@ -321,10 +321,16 @@ class Storage:
         return dict(row) if row else None
 
     def get_papers_by_topic(self, topic: str, limit: int = 20) -> list[dict[str, Any]]:
-        rows = self.conn.execute(
-            "SELECT * FROM papers WHERE title LIKE ? OR abstract LIKE ? ORDER BY relevance_score DESC LIMIT ?",
-            (f"%{topic}%", f"%{topic}%", limit),
-        ).fetchall()
+        if limit <= 0:
+            rows = self.conn.execute(
+                "SELECT * FROM papers WHERE title LIKE ? OR abstract LIKE ? ORDER BY relevance_score DESC",
+                (f"%{topic}%", f"%{topic}%"),
+            ).fetchall()
+        else:
+            rows = self.conn.execute(
+                "SELECT * FROM papers WHERE title LIKE ? OR abstract LIKE ? ORDER BY relevance_score DESC LIMIT ?",
+                (f"%{topic}%", f"%{topic}%", limit),
+            ).fetchall()
         return [dict(r) for r in rows]
 
     def insert_link(self, link: PaperLink) -> None:
@@ -349,27 +355,42 @@ class Storage:
 
     def insert_claim(self, claim: Claim) -> None:
         now = datetime.now(timezone.utc).isoformat()
+        claim_hash = compute_topic_claim_key(claim)
+        source_text_hash = hashlib.sha256(claim.claim_text.encode()).hexdigest()[:16]
         self.conn.execute(
             """INSERT OR REPLACE INTO claims (claim_id, paper_id, claim_text, evidence_type,
-                confidence, source_location, topic, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                confidence, source_location, topic, created_at,
+                claim_hash, source_text_hash, extraction_method, citation_key,
+                source_span_json, is_placeholder, evidence_status, source_quote)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (claim.claim_id, claim.paper_id, claim.claim_text, claim.evidence_type,
-             claim.confidence, claim.source_location, claim.topic, claim.created_at or now),
+             claim.confidence, claim.source_location, claim.topic, claim.created_at or now,
+             claim_hash, source_text_hash, "deterministic", claim.citation_key,
+             claim.source_span_json, 1 if claim.evidence_type == "full_text_needed" else 0,
+             claim.evidence_status or "abstract_only", claim.source_quote),
         )
         self.conn.commit()
 
     def insert_claims(self, claims: list[Claim]) -> None:
         """Batch insert claims in a single transaction."""
         now = datetime.now(timezone.utc).isoformat()
-        rows = [
-            (c.claim_id, c.paper_id, c.claim_text, c.evidence_type,
-             c.confidence, c.source_location, c.topic, c.created_at or now)
-            for c in claims
-        ]
+        rows = []
+        for c in claims:
+            claim_hash = compute_topic_claim_key(c)
+            source_text_hash = hashlib.sha256(c.claim_text.encode()).hexdigest()[:16]
+            rows.append((
+                c.claim_id, c.paper_id, c.claim_text, c.evidence_type,
+                c.confidence, c.source_location, c.topic, c.created_at or now,
+                claim_hash, source_text_hash, "deterministic", c.citation_key,
+                c.source_span_json, 1 if c.evidence_type == "full_text_needed" else 0,
+                c.evidence_status or "abstract_only", c.source_quote
+            ))
         self.conn.executemany(
             """INSERT OR REPLACE INTO claims (claim_id, paper_id, claim_text, evidence_type,
-                confidence, source_location, topic, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                confidence, source_location, topic, created_at,
+                claim_hash, source_text_hash, extraction_method, citation_key,
+                source_span_json, is_placeholder, evidence_status, source_quote)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             rows,
         )
         self.conn.commit()
@@ -503,14 +524,23 @@ class Storage:
         self.conn.commit()
 
     def get_topic_papers(self, topic: str, limit: int = 100) -> list[dict[str, Any]]:
-        rows = self.conn.execute(
-            """SELECT p.* FROM papers p
-            INNER JOIN topic_papers tp ON p.paper_id = tp.paper_id
-            WHERE tp.topic = ?
-            ORDER BY COALESCE(tp.llm_relevance_score, tp.relevance_score) DESC, p.relevance_score DESC
-            LIMIT ?""",
-            (topic, limit),
-        ).fetchall()
+        if limit <= 0:
+            rows = self.conn.execute(
+                """SELECT p.* FROM papers p
+                INNER JOIN topic_papers tp ON p.paper_id = tp.paper_id
+                WHERE tp.topic = ?
+                ORDER BY COALESCE(tp.llm_relevance_score, tp.relevance_score) DESC, p.relevance_score DESC""",
+                (topic,),
+            ).fetchall()
+        else:
+            rows = self.conn.execute(
+                """SELECT p.* FROM papers p
+                INNER JOIN topic_papers tp ON p.paper_id = tp.paper_id
+                WHERE tp.topic = ?
+                ORDER BY COALESCE(tp.llm_relevance_score, tp.relevance_score) DESC, p.relevance_score DESC
+                LIMIT ?""",
+                (topic, limit),
+            ).fetchall()
         return [dict(r) for r in rows]
 
     def has_topic_papers(self, topic: str) -> bool:

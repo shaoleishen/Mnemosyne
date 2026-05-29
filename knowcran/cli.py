@@ -475,6 +475,13 @@ def serve_mcp_curate_cmd() -> None:
     serve_mcp_curate()
 
 
+@app.command("serve-mcp-admin")
+def serve_mcp_admin_cmd() -> None:
+    """Start admin MCP server (all tools + metadata repair/dedupe). Local human use only."""
+    from knowcran.server.mcp import serve_mcp_admin
+    serve_mcp_admin()
+
+
 def main() -> None:
     app()
 

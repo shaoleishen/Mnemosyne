@@ -127,7 +127,11 @@ def discover(
             if storage.has_topic_papers(canonical_topic):
                 existing_papers = storage.get_topic_papers(canonical_topic, limit=limit)
                 console.print(f"  Returning {len(existing_papers)} existing topic papers")
-                return []  # Return empty since papers are already in DB
+                return [PaperRecord(**p) for p in existing_papers]
+            elif storage.has_topic_papers(question):
+                existing_papers = storage.get_topic_papers(question, limit=limit)
+                console.print(f"  Returning {len(existing_papers)} existing topic papers")
+                return [PaperRecord(**p) for p in existing_papers]
             return []
 
         # Dry run: show what would be done

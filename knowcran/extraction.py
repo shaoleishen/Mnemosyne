@@ -48,7 +48,7 @@ def extract_paper_claims_with_agent(
     if result.status != "ok" or not result.output_json:
         return []
 
-    return _parse_extraction_output(result.output_json, paper["paper_id"], topic)
+    return _parse_extraction_output(result.output_json, paper, topic)
 
 
 def extract_paper_claims_with_llm(
@@ -59,6 +59,7 @@ def extract_paper_claims_with_llm(
     """Extract claims from a paper using LLM-powered extraction (legacy)."""
     from knowcran.llm.prompts import build_extraction_prompt
     from knowcran.llm.schemas import PaperExtractionOutput
+    from knowcran.utils import citation_key as gen_citation_key
 
     prompt = build_extraction_prompt(topic, paper)
     result = provider.call(prompt, task_type="extraction")
@@ -66,6 +67,7 @@ def extract_paper_claims_with_llm(
 
     claims: list[Claim] = []
     paper_id = paper["paper_id"]
+    ck = gen_citation_key(paper)
 
     for item in parsed.evidence_items:
         claim_text = item.claim_text.strip()
@@ -82,14 +84,21 @@ def extract_paper_claims_with_llm(
             confidence=item.confidence,
             source_location=item.source_location,
             topic=topic,
+            citation_key=getattr(item, "citation_key", None) or ck,
+            evidence_status=getattr(item, "evidence_status", "abstract_only"),
+            source_quote=getattr(item, "source_quote", None) or (claim_text if item.source_location != "abstract" else ""),
+            source_span_json=getattr(item, "source_span_json", None),
         ))
 
     return claims
 
 
-def _parse_extraction_output(output: dict[str, Any], paper_id: str, topic: str) -> list[Claim]:
+def _parse_extraction_output(output: dict[str, Any], paper: dict[str, Any], topic: str) -> list[Claim]:
     """Parse agent extraction output into Claim objects."""
+    from knowcran.utils import citation_key as gen_citation_key
     claims: list[Claim] = []
+    paper_id = paper["paper_id"]
+    ck = gen_citation_key(paper)
 
     for item in output.get("evidence_items", []):
         claim_text = item.get("claim_text", "").strip()
@@ -107,6 +116,10 @@ def _parse_extraction_output(output: dict[str, Any], paper_id: str, topic: str) 
             confidence=item.get("confidence", 0.5),
             source_location=item.get("source_location", "abstract"),
             topic=topic,
+            citation_key=item.get("citation_key") or ck,
+            evidence_status=item.get("evidence_status") or "abstract_only",
+            source_quote=item.get("source_quote") or (claim_text if item.get("source_location") != "abstract" else ""),
+            source_span_json=item.get("source_span_json"),
         ))
 
     return claims

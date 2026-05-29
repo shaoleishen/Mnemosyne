@@ -284,15 +284,24 @@ def read_topic(topic: str, limit: int = 20, storage: Storage | None = None,
                 storage=storage,
             )
             claims_dicts, summary = executor.execute_extraction(topic, paper_dicts, storage)
-            console.print(f"  [dim]{format_workflow_summary(summary)}[/dim]")
+            from rich.console import Console
+            Console().print(f"  [dim]{format_workflow_summary(summary)}[/dim]")
 
             # Convert extracted evidence items to Claim objects
+            paper_map = {p["paper_id"]: p for p in papers}
             for item in claims_dicts:
                 paper_id = item.get("_paper_id", "")
                 provider_name = item.get("_provider", "deterministic")
                 claim_text = item.get("claim_text", "").strip()
                 if not claim_text:
                     continue
+
+                paper = paper_map.get(paper_id)
+                ck = None
+                if paper:
+                    from knowcran.utils import citation_key as gen_citation_key
+                    ck = gen_citation_key(paper)
+
                 evidence_type = item.get("evidence_type", "abstract_summary")
                 claim_id = _deterministic_claim_id(paper_id, topic, evidence_type, claim_text, item.get("source_location", "abstract"))
                 claim = Claim(
@@ -303,6 +312,10 @@ def read_topic(topic: str, limit: int = 20, storage: Storage | None = None,
                     confidence=item.get("confidence", 0.5),
                     source_location=item.get("source_location", "abstract"),
                     topic=topic,
+                    citation_key=item.get("citation_key") or ck,
+                    evidence_status=item.get("evidence_status") or "abstract_only",
+                    source_quote=item.get("source_quote") or (claim_text if item.get("source_location") != "abstract" else ""),
+                    source_span_json=item.get("source_span_json"),
                 )
                 storage.upsert_claim_idempotent(claim, extraction_method=f"agent:{provider_name}")
                 all_claims.append(claim)

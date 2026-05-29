@@ -1,8 +1,9 @@
 """MCP tool definitions for KnowCran.
 
-Tools are split into two categories:
+Tools are split into three categories by profile:
 - Read-only tools: safe for long-running MCP client connections
 - Curate/write tools: require approval, may network or mutate data
+- Admin tools: metadata repair, deduplication, run inspection (local human only)
 """
 
 from __future__ import annotations
@@ -73,7 +74,7 @@ def get_read_tools() -> list[dict[str, Any]]:
                 "type": "object",
                 "properties": {
                     "topic": {"type": "string", "description": "Topic name"},
-                    "limit": {"type": "integer", "description": "Max papers (default 20)", "default": 20},
+                    "limit": {"type": "integer", "description": "Max papers (0=all, default 20)", "default": 20},
                     "offset": {"type": "integer", "description": "Pagination offset (default 0)", "default": 0},
                     "response_format": {"type": "string", "enum": ["json", "markdown"], "default": "json"},
                     "data_dir": {"type": "string", "description": "Data directory path (optional)"},
@@ -143,6 +144,82 @@ def get_read_tools() -> list[dict[str, Any]]:
             },
             "annotations": ToolAnnotations(
                 title="Knowledge Base Stats",
+                readOnlyHint=True,
+                destructiveHint=False,
+                idempotentHint=True,
+                openWorldHint=False,
+            ),
+        },
+        {
+            "name": "knowcran_get_topic_tree",
+            "description": "Get the topic hierarchy: canonical topic, aliases, parent topics, and subtopics.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "topic": {"type": "string", "description": "Topic name"},
+                    "data_dir": {"type": "string", "description": "Data directory path (optional)"},
+                },
+                "required": ["topic"],
+            },
+            "annotations": ToolAnnotations(
+                title="Get Topic Tree",
+                readOnlyHint=True,
+                destructiveHint=False,
+                idempotentHint=True,
+                openWorldHint=False,
+            ),
+        },
+        {
+            "name": "knowcran_validate_citations",
+            "description": "Validate citation keys in a text against the knowledge base. Returns valid keys, invalid keys, and missing keys.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "topic": {"type": "string", "description": "Topic to validate against"},
+                    "text": {"type": "string", "description": "Text containing citation keys to validate"},
+                    "data_dir": {"type": "string", "description": "Data directory path (optional)"},
+                },
+                "required": ["topic", "text"],
+            },
+            "annotations": ToolAnnotations(
+                title="Validate Citations",
+                readOnlyHint=True,
+                destructiveHint=False,
+                idempotentHint=True,
+                openWorldHint=False,
+            ),
+        },
+        {
+            "name": "knowcran_get_runs",
+            "description": "List recent discovery, reading, review, and export runs. Shows what operations have been performed.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "limit": {"type": "integer", "description": "Max runs to return (default 20)", "default": 20},
+                    "data_dir": {"type": "string", "description": "Data directory path (optional)"},
+                },
+            },
+            "annotations": ToolAnnotations(
+                title="Get Runs",
+                readOnlyHint=True,
+                destructiveHint=False,
+                idempotentHint=True,
+                openWorldHint=False,
+            ),
+        },
+        {
+            "name": "knowcran_get_run",
+            "description": "Inspect a specific run and its details, including failures.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "run_id": {"type": "string", "description": "Run ID to inspect"},
+                    "data_dir": {"type": "string", "description": "Data directory path (optional)"},
+                },
+                "required": ["run_id"],
+            },
+            "annotations": ToolAnnotations(
+                title="Get Run Details",
                 readOnlyHint=True,
                 destructiveHint=False,
                 idempotentHint=True,
@@ -303,3 +380,58 @@ def get_all_tools() -> list[dict[str, Any]]:
 def get_read_only_tools() -> list[dict[str, Any]]:
     """Return only read-only tools (read + audit, no write)."""
     return get_read_tools() + get_audit_tools()
+
+
+# ---------------------------------------------------------------------------
+# Admin tool definitions (local human use only)
+# ---------------------------------------------------------------------------
+
+def get_admin_tools() -> list[dict[str, Any]]:
+    """Return admin-only MCP tool definitions for metadata repair and inspection."""
+    return [
+        {
+            "name": "knowcran_repair_metadata",
+            "description": "Admin: Repair paper metadata using DOI/PMID. Updates title, abstract, venue, and citation counts from external sources.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "paper_id": {"type": "string", "description": "Paper ID to repair"},
+                    "dry_run": {"type": "boolean", "description": "Show changes without applying (default true)", "default": True},
+                    "data_dir": {"type": "string", "description": "Data directory path (optional)"},
+                },
+                "required": ["paper_id"],
+            },
+            "annotations": ToolAnnotations(
+                title="Repair Metadata",
+                readOnlyHint=False,
+                destructiveHint=False,
+                idempotentHint=True,
+                openWorldHint=False,
+            ),
+        },
+        {
+            "name": "knowcran_dedupe_claims",
+            "description": "Admin: Inspect and merge duplicate claims within a topic. Returns duplicate groups with merge suggestions.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "topic": {"type": "string", "description": "Topic to check for duplicates"},
+                    "auto_merge": {"type": "boolean", "description": "Automatically merge duplicates (default false)", "default": False},
+                    "data_dir": {"type": "string", "description": "Data directory path (optional)"},
+                },
+                "required": ["topic"],
+            },
+            "annotations": ToolAnnotations(
+                title="Dedupe Claims",
+                readOnlyHint=False,
+                destructiveHint=True,
+                idempotentHint=False,
+                openWorldHint=False,
+            ),
+        },
+    ]
+
+
+def get_admin_profile_tools() -> list[dict[str, Any]]:
+    """Return all tools for admin profile (read + write + audit + admin)."""
+    return get_read_tools() + get_write_tools() + get_audit_tools() + get_admin_tools()

@@ -99,6 +99,9 @@ class EvidenceMatrixRow(BaseModel):
     claim_text: str
     evidence_type: str
     confidence: float
+    citation_key: str | None = None
+    evidence_status: str = "abstract_only"
+    source_quote: str | None = None
 
 
 class ReviewRequest(BaseModel):

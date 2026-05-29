@@ -150,8 +150,9 @@ class TestTopicRelations:
 class TestEvidenceTraceability:
     """P1: evidence_matrix returns citation_key and source_quote."""
 
-    def test_evidence_matrix_has_citation_key_and_source_quote(self, db_with_topics):
+    def test_evidence_matrix_has_citation_key_and_source_quote(self, db_with_topics, monkeypatch):
         """Evidence matrix must include citation_key and source_quote fields."""
+        monkeypatch.setenv("KNOWCRAN_DATA_DIR", str(db_with_topics))
         result = handle_tool_call("knowcran_get_evidence_matrix", {
             "topic": "ICH",
             "data_dir": str(db_with_topics),
@@ -183,11 +184,11 @@ class TestFastMCPSchema:
         from knowcran.server.mcp import _create_readonly_server
         server = _create_readonly_server()
         tools = server._tool_manager.list_tools()
-        assert len(tools) == 7  # 6 read + 1 audit
+        assert len(tools) == 11  # 10 read + 1 audit
 
     def test_curate_server_creates_successfully(self):
         """Curate server should create without errors."""
         from knowcran.server.mcp import _create_curate_server
         server = _create_curate_server()
         tools = server._tool_manager.list_tools()
-        assert len(tools) == 12  # 6 read + 5 write + 1 audit
+        assert len(tools) == 16  # 10 read + 5 write + 1 audit

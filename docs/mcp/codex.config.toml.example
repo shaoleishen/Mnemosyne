@@ -1,0 +1,16 @@
+[mcp_servers.knowcran]
+command = "uv"
+args = [
+  "--directory",
+  "/path/to/Mnemosyne",
+  "run",
+  "knowcran",
+  "serve-mcp-readonly"
+]
+startup_timeout_sec = 20
+tool_timeout_sec = 120
+enabled = true
+
+[mcp_servers.knowcran.env]
+KNOWCRAN_DATA_DIR = "/path/to/data"
+KNOWCRAN_VAULT_DIR = "/path/to/vault"

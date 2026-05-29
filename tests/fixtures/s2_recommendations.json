@@ -1,0 +1,18 @@
+{
+  "recommendedPapers": [
+    {
+      "paperId": "rec-001",
+      "title": "Gluten Sensitivity and Immune Response",
+      "abstract": "Novel findings on gluten sensitivity mechanisms in celiac patients.",
+      "year": 2024,
+      "venue": "Cell",
+      "externalIds": {"DOI": "10.1000/rec001"},
+      "citationCount": 15,
+      "referenceCount": 20,
+      "influentialCitationCount": 2,
+      "fieldsOfStudy": ["Medicine"],
+      "openAccessPdf": null,
+      "authors": [{"authorId": "a4", "name": "Wang X."}]
+    }
+  ]
+}

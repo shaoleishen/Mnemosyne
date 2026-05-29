@@ -1,0 +1,305 @@
+"""MCP tool definitions for KnowCran.
+
+Tools are split into two categories:
+- Read-only tools: safe for long-running MCP client connections
+- Curate/write tools: require approval, may network or mutate data
+"""
+
+from __future__ import annotations
+
+from typing import Any
+
+from mcp.types import ToolAnnotations
+
+
+# ---------------------------------------------------------------------------
+# Read-only tool definitions
+# ---------------------------------------------------------------------------
+
+def get_read_tools() -> list[dict[str, Any]]:
+    """Return read-only MCP tool definitions with annotations."""
+    return [
+        {
+            "name": "knowcran_search_papers",
+            "description": "Search papers in the KnowCran database by title or abstract keywords. Returns paper_id, title, year, venue, doi, pmid, citation_key, relevance_score.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Search query (keywords)"},
+                    "topic": {"type": "string", "description": "Topic name (alternative to query)"},
+                    "limit": {"type": "integer", "description": "Max results (default 20)", "default": 20},
+                    "offset": {"type": "integer", "description": "Pagination offset (default 0)", "default": 0},
+                    "response_format": {"type": "string", "enum": ["json", "markdown"], "default": "json", "description": "Response format"},
+                    "data_dir": {"type": "string", "description": "Data directory path (optional)"},
+                },
+            },
+            "annotations": ToolAnnotations(
+                title="Search Papers",
+                readOnlyHint=True,
+                destructiveHint=False,
+                idempotentHint=True,
+                openWorldHint=False,
+            ),
+        },
+        {
+            "name": "knowcran_search_claims",
+            "description": "Search claims by topic, paper_id, or evidence_type. Returns claim_id, paper_id, citation_key, claim_text, evidence_type, confidence, source_location, source_quote.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "topic": {"type": "string", "description": "Topic to search claims for"},
+                    "paper_id": {"type": "string", "description": "Filter by paper ID"},
+                    "evidence_type": {"type": "string", "description": "Filter by evidence type (abstract_summary, method, result, limitation, open_question)"},
+                    "limit": {"type": "integer", "description": "Max results (default 50)", "default": 50},
+                    "offset": {"type": "integer", "description": "Pagination offset (default 0)", "default": 0},
+                    "min_confidence": {"type": "number", "description": "Minimum confidence threshold (0-1)"},
+                    "response_format": {"type": "string", "enum": ["json", "markdown"], "default": "json"},
+                    "data_dir": {"type": "string", "description": "Data directory path (optional)"},
+                },
+                "required": ["topic"],
+            },
+            "annotations": ToolAnnotations(
+                title="Search Claims",
+                readOnlyHint=True,
+                destructiveHint=False,
+                idempotentHint=True,
+                openWorldHint=False,
+            ),
+        },
+        {
+            "name": "knowcran_get_topic_papers",
+            "description": "Get papers associated with a topic. Returns paper_id, title, year, venue, relevance_score.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "topic": {"type": "string", "description": "Topic name"},
+                    "limit": {"type": "integer", "description": "Max papers (default 20)", "default": 20},
+                    "offset": {"type": "integer", "description": "Pagination offset (default 0)", "default": 0},
+                    "response_format": {"type": "string", "enum": ["json", "markdown"], "default": "json"},
+                    "data_dir": {"type": "string", "description": "Data directory path (optional)"},
+                },
+                "required": ["topic"],
+            },
+            "annotations": ToolAnnotations(
+                title="Get Topic Papers",
+                readOnlyHint=True,
+                destructiveHint=False,
+                idempotentHint=True,
+                openWorldHint=False,
+            ),
+        },
+        {
+            "name": "knowcran_get_evidence_matrix",
+            "description": "Get the evidence matrix for a topic (papers x claims). Returns claim-level traceability with citation_key, source_quote, evidence_status. Use this for writing reviews or answering questions.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "topic": {"type": "string", "description": "Topic name"},
+                    "max_papers": {"type": "integer", "description": "Max papers (default 20)", "default": 20},
+                    "evidence_types": {"type": "array", "items": {"type": "string"}, "description": "Filter by evidence types"},
+                    "include_quotes": {"type": "boolean", "description": "Include source quotes (default true)", "default": True},
+                    "include_open_questions": {"type": "boolean", "description": "Include open questions (default true)", "default": True},
+                    "response_format": {"type": "string", "enum": ["json", "markdown"], "default": "json"},
+                    "data_dir": {"type": "string", "description": "Data directory path (optional)"},
+                },
+                "required": ["topic"],
+            },
+            "annotations": ToolAnnotations(
+                title="Get Evidence Matrix",
+                readOnlyHint=True,
+                destructiveHint=False,
+                idempotentHint=True,
+                openWorldHint=False,
+            ),
+        },
+        {
+            "name": "knowcran_get_bibliography",
+            "description": "Get BibTeX bibliography or citation key map for a topic.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "topic": {"type": "string", "description": "Topic name"},
+                    "format": {"type": "string", "enum": ["bibtex", "json"], "default": "bibtex", "description": "Output format"},
+                    "data_dir": {"type": "string", "description": "Data directory path (optional)"},
+                },
+                "required": ["topic"],
+            },
+            "annotations": ToolAnnotations(
+                title="Get Bibliography",
+                readOnlyHint=True,
+                destructiveHint=False,
+                idempotentHint=True,
+                openWorldHint=False,
+            ),
+        },
+        {
+            "name": "knowcran_stats",
+            "description": "Check KnowCran knowledge base health: paper count, claim count, link count, topic count, last updated.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "data_dir": {"type": "string", "description": "Data directory path (optional)"},
+                },
+            },
+            "annotations": ToolAnnotations(
+                title="Knowledge Base Stats",
+                readOnlyHint=True,
+                destructiveHint=False,
+                idempotentHint=True,
+                openWorldHint=False,
+            ),
+        },
+    ]
+
+
+# ---------------------------------------------------------------------------
+# Curate / write tool definitions
+# ---------------------------------------------------------------------------
+
+def get_write_tools() -> list[dict[str, Any]]:
+    """Return curate/write MCP tool definitions with annotations."""
+    return [
+        {
+            "name": "knowcran_discover",
+            "description": "Search Semantic Scholar for papers on a topic and store them in the database. Returns search summary, not conclusions.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "topic": {"type": "string", "description": "Research topic or question"},
+                    "limit": {"type": "integer", "description": "Max papers (default 50, max 200)", "default": 50},
+                    "expand": {"type": "boolean", "description": "Expand via references/citations (default false)", "default": False},
+                    "data_dir": {"type": "string", "description": "Data directory path (optional)"},
+                },
+                "required": ["topic"],
+            },
+            "annotations": ToolAnnotations(
+                title="Discover Papers",
+                readOnlyHint=False,
+                destructiveHint=False,
+                idempotentHint=False,
+                openWorldHint=True,
+            ),
+        },
+        {
+            "name": "knowcran_read_topic",
+            "description": "Extract claims from all papers matching a topic. Each claim must have source_quote or be marked full_text_needed.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "topic": {"type": "string", "description": "Topic to read"},
+                    "limit": {"type": "integer", "description": "Max papers (default 20)", "default": 20},
+                    "data_dir": {"type": "string", "description": "Data directory path (optional)"},
+                },
+                "required": ["topic"],
+            },
+            "annotations": ToolAnnotations(
+                title="Read Topic Claims",
+                readOnlyHint=False,
+                destructiveHint=False,
+                idempotentHint=False,
+                openWorldHint=False,
+            ),
+        },
+        {
+            "name": "knowcran_read_paper",
+            "description": "Extract claims from a single paper by paper_id.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "paper_id": {"type": "string", "description": "Semantic Scholar paper ID"},
+                    "topic": {"type": "string", "description": "Topic to tag claims with"},
+                    "data_dir": {"type": "string", "description": "Data directory path (optional)"},
+                },
+                "required": ["paper_id"],
+            },
+            "annotations": ToolAnnotations(
+                title="Read Paper Claims",
+                readOnlyHint=False,
+                destructiveHint=False,
+                idempotentHint=False,
+                openWorldHint=False,
+            ),
+        },
+        {
+            "name": "knowcran_review",
+            "description": "Generate a literature review from stored claims. Citation keys are validated against the database.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "topic": {"type": "string", "description": "Topic to review"},
+                    "max_papers": {"type": "integer", "description": "Max papers (default 20)", "default": 20},
+                    "data_dir": {"type": "string", "description": "Data directory path (optional)"},
+                    "vault_dir": {"type": "string", "description": "Vault directory path (optional)"},
+                },
+                "required": ["topic"],
+            },
+            "annotations": ToolAnnotations(
+                title="Generate Review",
+                readOnlyHint=False,
+                destructiveHint=False,
+                idempotentHint=True,
+                openWorldHint=False,
+            ),
+        },
+        {
+            "name": "knowcran_export_obsidian",
+            "description": "Export Obsidian vault notes for a topic. Only writes to configured vault directory.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "topic": {"type": "string", "description": "Topic to export"},
+                    "data_dir": {"type": "string", "description": "Data directory path (optional)"},
+                    "vault_dir": {"type": "string", "description": "Vault directory path (optional)"},
+                },
+                "required": ["topic"],
+            },
+            "annotations": ToolAnnotations(
+                title="Export to Obsidian",
+                readOnlyHint=False,
+                destructiveHint=False,
+                idempotentHint=True,
+                openWorldHint=False,
+            ),
+        },
+    ]
+
+
+# ---------------------------------------------------------------------------
+# Audit tool (anti-hallucination)
+# ---------------------------------------------------------------------------
+
+def get_audit_tools() -> list[dict[str, Any]]:
+    """Return audit/anti-hallucination tool definitions."""
+    return [
+        {
+            "name": "knowcran_audit_answer",
+            "description": "Audit an agent-generated answer against the evidence matrix. Flags unsupported facts, invalid citations, overclaim risks (abstract_only_overclaim, animal_to_human_overclaim, correlation_to_causation, missing_uncertainty).",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "topic": {"type": "string", "description": "Topic to audit against"},
+                    "answer_text": {"type": "string", "description": "The agent-generated answer text to audit"},
+                    "strict": {"type": "boolean", "description": "Strict mode: require every fact to have a claim (default false)", "default": False},
+                    "data_dir": {"type": "string", "description": "Data directory path (optional)"},
+                },
+                "required": ["topic", "answer_text"],
+            },
+            "annotations": ToolAnnotations(
+                title="Audit Answer",
+                readOnlyHint=True,
+                destructiveHint=False,
+                idempotentHint=True,
+                openWorldHint=False,
+            ),
+        },
+    ]
+
+
+def get_all_tools() -> list[dict[str, Any]]:
+    """Return all MCP tools (read + write + audit)."""
+    return get_read_tools() + get_write_tools() + get_audit_tools()
+
+
+def get_read_only_tools() -> list[dict[str, Any]]:
+    """Return only read-only tools (read + audit, no write)."""
+    return get_read_tools() + get_audit_tools()

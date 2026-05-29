@@ -1,0 +1,34 @@
+{
+  "mcpServers": {
+    "knowcran": {
+      "type": "stdio",
+      "command": "uv",
+      "args": [
+        "--directory",
+        "/path/to/Mnemosyne",
+        "run",
+        "knowcran",
+        "serve-mcp-readonly"
+      ],
+      "env": {
+        "KNOWCRAN_DATA_DIR": "/path/to/data",
+        "KNOWCRAN_VAULT_DIR": "/path/to/vault"
+      }
+    },
+    "knowcran-curate": {
+      "type": "stdio",
+      "command": "uv",
+      "args": [
+        "--directory",
+        "/path/to/Mnemosyne",
+        "run",
+        "knowcran",
+        "serve-mcp-curate"
+      ],
+      "env": {
+        "KNOWCRAN_DATA_DIR": "/path/to/data",
+        "KNOWCRAN_VAULT_DIR": "/path/to/vault"
+      }
+    }
+  }
+}

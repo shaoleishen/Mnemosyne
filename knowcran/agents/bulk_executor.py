@@ -1,12 +1,11 @@
-"""Bulk agent execution with chunking, timeout budgets, and fallback."""
+"""Bulk agent execution with chunking, timeout budgets, parallel execution, and fallback."""
 
 from __future__ import annotations
 
-import hashlib
-import json
 import logging
 import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -32,6 +31,7 @@ class ChunkConfig:
     max_retries: int = 2
     max_timeouts: int = 3
     fallback_provider: str | None = "deterministic"
+    max_workers: int = 4
 
 
 @dataclass
@@ -66,7 +66,7 @@ class WorkflowSummary:
 
 
 class BulkExecutor:
-    """Executes agent tasks in chunks with timeout budgets and fallback."""
+    """Executes agent tasks in chunks with timeout budgets, parallel execution, and fallback."""
 
     def __init__(
         self,
@@ -103,12 +103,10 @@ class BulkExecutor:
         papers: list[dict[str, Any]],
         storage: Any = None,
     ) -> tuple[list[dict[str, Any]], WorkflowSummary]:
-        """Execute reranking in chunks.
+        """Execute reranking in chunks with parallel execution.
 
         Returns (updated_papers, summary).
         """
-        from knowcran.agents.audit import audit_agent_run
-
         summary = WorkflowSummary(
             workflow_id=f"rerank-{uuid.uuid4().hex[:8]}",
             task_type="relevance_rerank",
@@ -118,16 +116,15 @@ class BulkExecutor:
         chunk_size = self._get_chunk_size("relevance_rerank")
         timeout = self._get_timeout("relevance_rerank")
         all_decisions: list[dict[str, Any]] = []
-        timeout_count = 0
 
         # Split papers into chunks
         chunks = [papers[i:i + chunk_size] for i in range(0, len(papers), chunk_size)]
         summary.total_chunks = len(chunks)
 
+        # Build tasks for parallel execution
+        tasks = []
         for chunk_idx, chunk in enumerate(chunks):
             chunk_id = f"{summary.workflow_id}-c{chunk_idx}"
-            console.print(f"  Reranking chunk {chunk_idx + 1}/{len(chunks)} ({len(chunk)} papers)")
-
             task = AgentTask(
                 task_id=chunk_id,
                 task_type="relevance_rerank",
@@ -136,26 +133,22 @@ class BulkExecutor:
                 output_schema_name="PaperRerankOutput",
                 timeout_seconds=timeout,
             )
+            tasks.append((chunk_idx, task))
 
-            result = self._execute_with_retry(task, timeout)
-            summary.chunks.append(result)
+        # Execute in parallel
+        results = self._execute_parallel(tasks, "rerank")
+        summary.chunks = results
 
-            if result.status == "completed":
+        for result in results:
+            if result.status in ("completed", "fallback_used"):
                 summary.succeeded += 1
                 if result.output:
                     decisions = result.output.get("decisions", [])
                     all_decisions.extend(decisions)
+                if result.status == "fallback_used":
+                    summary.fell_back += 1
             elif result.status == "timeout":
                 summary.timed_out += 1
-                timeout_count += 1
-                if timeout_count >= self.config.max_timeouts:
-                    console.print(f"  [yellow]Max timeouts ({self.config.max_timeouts}) reached, stopping.[/yellow]")
-                    break
-            elif result.status == "fallback_used":
-                summary.fell_back += 1
-                if result.output:
-                    decisions = result.output.get("decisions", [])
-                    all_decisions.extend(decisions)
             else:
                 summary.retried += result.retry_count
 
@@ -187,7 +180,7 @@ class BulkExecutor:
         papers: list[dict[str, Any]],
         storage: Any = None,
     ) -> tuple[list[dict[str, Any]], WorkflowSummary]:
-        """Execute claim extraction in chunks.
+        """Execute claim extraction in chunks with parallel execution.
 
         Returns (all_claims_dicts, summary).
         """
@@ -199,15 +192,12 @@ class BulkExecutor:
 
         timeout = self._get_timeout("claim_extraction")
         all_claims: list[dict[str, Any]] = []
-        timeout_count = 0
-
         summary.total_chunks = len(papers)
 
+        # Build tasks for parallel execution
+        tasks = []
         for paper_idx, paper in enumerate(papers):
             chunk_id = f"{summary.workflow_id}-p{paper_idx}"
-            if (paper_idx + 1) % 10 == 0 or paper_idx == 0:
-                console.print(f"  Extracting claims {paper_idx + 1}/{len(papers)}")
-
             task = AgentTask(
                 task_id=chunk_id,
                 task_type="claim_extraction",
@@ -217,11 +207,14 @@ class BulkExecutor:
                 output_schema_name="PaperExtractionOutput",
                 timeout_seconds=timeout,
             )
+            tasks.append((paper_idx, task, paper))
 
-            result = self._execute_with_retry(task, timeout)
-            summary.chunks.append(result)
+        # Execute in parallel
+        results_with_papers = self._execute_parallel_with_papers(tasks, "extraction")
+        summary.chunks = [r for r, _ in results_with_papers]
 
-            if result.status == "completed":
+        for result, paper in results_with_papers:
+            if result.status in ("completed", "fallback_used"):
                 summary.succeeded += 1
                 if result.output:
                     items = result.output.get("evidence_items", [])
@@ -229,25 +222,103 @@ class BulkExecutor:
                         item["_paper_id"] = paper.get("paper_id")
                         item["_provider"] = result.provider
                     all_claims.extend(items)
+                if result.status == "fallback_used":
+                    summary.fell_back += 1
             elif result.status == "timeout":
                 summary.timed_out += 1
-                timeout_count += 1
-                if timeout_count >= self.config.max_timeouts:
-                    console.print(f"  [yellow]Max timeouts ({self.config.max_timeouts}) reached, stopping.[/yellow]")
-                    break
-            elif result.status == "fallback_used":
-                summary.fell_back += 1
-                if result.output:
-                    items = result.output.get("evidence_items", [])
-                    for item in items:
-                        item["_paper_id"] = paper.get("paper_id")
-                        item["_provider"] = "deterministic"
-                    all_claims.extend(items)
+            else:
+                summary.retried += result.retry_count
 
         latencies = [c.duration_ms for c in summary.chunks if c.duration_ms > 0]
         summary.avg_latency_ms = sum(latencies) / len(latencies) if latencies else 0
 
         return all_claims, summary
+
+    def _execute_parallel(self, tasks: list[tuple[int, AgentTask]], label: str) -> list[ChunkResult]:
+        """Execute tasks in parallel using ThreadPoolExecutor."""
+        results: list[ChunkResult] = [None] * len(tasks)  # type: ignore
+        max_workers = min(self.config.max_workers, len(tasks))
+
+        if max_workers <= 1 or len(tasks) <= 1:
+            # Sequential execution for single task or single worker
+            for idx, task in tasks:
+                results[idx] = self._execute_with_retry(task, task.timeout_seconds)
+                console.print(f"  {label} {idx + 1}/{len(tasks)} done")
+            return results
+
+        console.print(f"  Running {len(tasks)} {label} chunks with {max_workers} workers")
+
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            future_to_idx = {}
+            for idx, task in tasks:
+                future = executor.submit(self._execute_with_retry, task, task.timeout_seconds)
+                future_to_idx[future] = idx
+
+            completed = 0
+            for future in as_completed(future_to_idx):
+                idx = future_to_idx[future]
+                try:
+                    result = future.result()
+                    results[idx] = result
+                except Exception as e:
+                    results[idx] = ChunkResult(
+                        chunk_id=tasks[idx][1].task_id,
+                        task_type=tasks[idx][1].task_type,
+                        input_count=1,
+                        status="provider_error",
+                        provider=self.provider.name,
+                        error=str(e),
+                    )
+                completed += 1
+                if completed % 5 == 0 or completed == len(tasks):
+                    console.print(f"  {label} progress: {completed}/{len(tasks)}")
+
+        return results
+
+    def _execute_parallel_with_papers(self, tasks: list[tuple[int, AgentTask, dict[str, Any]]], label: str) -> list[tuple[ChunkResult, dict[str, Any]]]:
+        """Execute tasks in parallel, preserving paper association."""
+        results: list[tuple[ChunkResult, dict[str, Any]]] = [None] * len(tasks)  # type: ignore
+        max_workers = min(self.config.max_workers, len(tasks))
+
+        if max_workers <= 1 or len(tasks) <= 1:
+            for idx, task, paper in tasks:
+                result = self._execute_with_retry(task, task.timeout_seconds)
+                results[idx] = (result, paper)
+                if (idx + 1) % 10 == 0:
+                    console.print(f"  {label} {idx + 1}/{len(tasks)} done")
+            return results
+
+        console.print(f"  Running {len(tasks)} {label} chunks with {max_workers} workers")
+
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            future_to_idx = {}
+            for idx, task, paper in tasks:
+                future = executor.submit(self._execute_with_retry, task, task.timeout_seconds)
+                future_to_idx[future] = (idx, paper)
+
+            completed = 0
+            for future in as_completed(future_to_idx):
+                idx, paper = future_to_idx[future]
+                try:
+                    result = future.result()
+                    results[idx] = (result, paper)
+                except Exception as e:
+                    results[idx] = (
+                        ChunkResult(
+                            chunk_id=tasks[idx][1].task_id,
+                            task_type=tasks[idx][1].task_type,
+                            input_count=1,
+                            status="provider_error",
+                            provider=self.provider.name,
+                            error=str(e),
+                        ),
+                        paper,
+                    )
+                completed += 1
+                if completed % 10 == 0 or completed == len(tasks):
+                    console.print(f"  {label} progress: {completed}/{len(tasks)}")
+
+        return results
 
     def _execute_with_retry(self, task: AgentTask, timeout: int) -> ChunkResult:
         """Execute a single task with retry and fallback."""

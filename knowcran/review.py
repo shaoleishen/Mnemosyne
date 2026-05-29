@@ -261,6 +261,14 @@ def _agent_review_synthesis(
         if invalid_keys:
             return None
 
+        # Check if agent returned all-empty sections despite having claims
+        # This happens with deterministic provider which returns empty lists
+        if claims:
+            sections = ["background", "main_evidence", "methods_and_models", "limitations", "open_questions"]
+            all_empty = all(len(result.output_json.get(s, [])) == 0 for s in sections)
+            if all_empty:
+                return None  # Force fallback to rule-based review
+
         return _build_review_text_from_llm(topic, papers, result.output_json)
 
     except Exception:

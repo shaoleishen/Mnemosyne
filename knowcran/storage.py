@@ -155,6 +155,17 @@ def _migrate(conn: sqlite3.Connection) -> None:
         cursor.execute("ALTER TABLE topic_papers ADD COLUMN updated_at TEXT")
         cursor.execute("UPDATE topic_papers SET updated_at = created_at WHERE updated_at IS NULL")
 
+    # Add indices for query performance
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_claims_topic ON claims(topic)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_claims_paper_id ON claims(paper_id)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_topic_papers_topic ON topic_papers(topic)")
+
+    # Only create relevance_score index if the column exists
+    cursor.execute("PRAGMA table_info(papers)")
+    papers_cols = {row[1] for row in cursor.fetchall()}
+    if "relevance_score" in papers_cols:
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_papers_relevance_score ON papers(relevance_score)")
+
     conn.commit()
 
 

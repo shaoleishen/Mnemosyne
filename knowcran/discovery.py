@@ -253,31 +253,25 @@ def _expand(top_papers: list[PaperRecord], client: SemanticScholarClient, storag
     for paper in top_papers:
         console.print(f"  Expanding: {paper.title[:60]}...")
 
-        # References - collect IDs only
+        # Fetch both references and citations in a single API call
         try:
-            detail = client.get_paper(paper.paper_id, fields="references")
+            detail = client.get_paper(paper.paper_id, fields="references,citations")
             refs = detail.get("references") or []
+            cites = detail.get("citations") or []
+
             for ref in refs[:20]:
                 ref_id = ref.get("paperId")
                 if ref_id:
                     ref_ids.append(ref_id)
                     links.append(PaperLink(source_paper_id=paper.paper_id, target_paper_id=ref_id, link_type="reference"))
-        except Exception as e:
-            msg = f"references for {paper.paper_id}: {e}"
-            console.print(f"    [yellow]Warning: failed to fetch {msg}[/yellow]")
-            failed_expansions.append(msg)
 
-        # Citations - collect IDs only
-        try:
-            detail = client.get_paper(paper.paper_id, fields="citations")
-            cites = detail.get("citations") or []
             for cite in cites[:20]:
                 cite_id = cite.get("paperId")
                 if cite_id:
                     cite_ids.append(cite_id)
                     links.append(PaperLink(source_paper_id=paper.paper_id, target_paper_id=cite_id, link_type="citation"))
         except Exception as e:
-            msg = f"citations for {paper.paper_id}: {e}"
+            msg = f"references/citations for {paper.paper_id}: {e}"
             console.print(f"    [yellow]Warning: failed to fetch {msg}[/yellow]")
             failed_expansions.append(msg)
 

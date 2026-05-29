@@ -108,6 +108,9 @@ def discover(
     vault_dir: str | None = typer.Option(None, "--vault-dir", help="Vault directory path"),
     llm: bool | None = typer.Option(None, "--llm/--no-llm", help="Enable/disable LLM reranking"),
     agent_provider: str | None = typer.Option(None, "--agent-provider", help="Agent provider name (e.g. pi-print-json, claw)"),
+    resume: bool = typer.Option(False, "--resume", help="Resume from last checkpoint"),
+    force: bool = typer.Option(False, "--force", help="Force re-fetch even if already completed"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Show what would be done without fetching"),
 ) -> None:
     """Search Semantic Scholar and store papers."""
     settings = _settings(data_dir, vault_dir)
@@ -118,8 +121,11 @@ def discover(
     storage = Storage(db_path=settings.db_path)
     provider = _get_agent_provider(settings, agent_provider, llm)
     llm_prov = _get_llm_provider(settings, llm) if provider is None else None
-    papers = do_discover(question, limit=limit, expand=expand, client=client, storage=storage, llm_provider=llm_prov, agent_provider=provider)
-    console.print(f"[green]Discovered {len(papers)} papers.[/green]")
+    papers = do_discover(question, limit=limit, expand=expand, client=client, storage=storage,
+                         llm_provider=llm_prov, agent_provider=provider,
+                         resume=resume, force=force, dry_run=dry_run)
+    if not dry_run:
+        console.print(f"[green]Discovered {len(papers)} papers.[/green]")
 
 
 @app.command("read-paper")
@@ -362,6 +368,85 @@ def agents_failures(
         table.add_column("Time")
         for f in failures:
             table.add_row(f["task_id"], f["provider"], f["task_type"], (f.get("error") or "")[:60], f["created_at"][:19])
+        console.print(table)
+    finally:
+        storage.close()
+
+
+topics_app = typer.Typer(name="topics", help="Manage topics and aliases.")
+app.add_typer(topics_app, name="topics")
+
+
+@topics_app.command("alias")
+def topics_alias(
+    alias: str = typer.Argument(help="Alias name"),
+    canonical: str = typer.Argument(help="Canonical topic name"),
+    data_dir: str | None = typer.Option(None, "--data-dir", help="Data directory path"),
+):
+    """Add a topic alias mapping."""
+    settings = _settings(data_dir, None)
+    from knowcran.storage import Storage
+    storage = Storage(db_path=settings.db_path)
+    try:
+        storage.add_topic_alias(alias, canonical)
+        console.print(f"[green]Added alias: '{alias}' -> '{canonical}'[/green]")
+    finally:
+        storage.close()
+
+
+@topics_app.command("coverage")
+def topics_coverage(
+    topic: str = typer.Argument(help="Topic to check coverage for"),
+    data_dir: str | None = typer.Option(None, "--data-dir", help="Data directory path"),
+):
+    """Show discovery coverage for a topic."""
+    settings = _settings(data_dir, None)
+    from knowcran.storage import Storage
+    storage = Storage(db_path=settings.db_path)
+    try:
+        canonical = storage.resolve_topic(topic)
+        coverage = storage.get_discovery_topic_coverage(canonical)
+        paper_count = len(storage.get_topic_papers(canonical, limit=10000))
+
+        console.print(f"[bold]Topic:[/bold] {topic}")
+        if canonical != topic:
+            console.print(f"[bold]Canonical:[/bold] {canonical}")
+        console.print(f"[bold]Papers in DB:[/bold] {paper_count}")
+        console.print(f"[bold]Discovery queries:[/bold] {coverage.get('total_queries', 0)}")
+
+        by_status = coverage.get("by_status", {})
+        for status, info in by_status.items():
+            console.print(f"  {status}: {info['count']} queries, {info['papers']} papers")
+
+        # Show aliases
+        aliases = storage.get_topic_aliases(canonical)
+        if aliases:
+            console.print(f"[bold]Aliases:[/bold] {', '.join(aliases)}")
+    finally:
+        storage.close()
+
+
+@topics_app.command("list")
+def topics_list(
+    data_dir: str | None = typer.Option(None, "--data-dir", help="Data directory path"),
+):
+    """List all known topics."""
+    settings = _settings(data_dir, None)
+    from knowcran.storage import Storage
+    storage = Storage(db_path=settings.db_path)
+    try:
+        topics = storage.get_canonical_topics()
+        if not topics:
+            console.print("[yellow]No topics found. Run 'discover' first.[/yellow]")
+            return
+        table = Table(title="Topics")
+        table.add_column("Topic", style="bold")
+        table.add_column("Papers")
+        table.add_column("Aliases")
+        for t in topics:
+            paper_count = len(storage.get_topic_papers(t, limit=10000))
+            aliases = storage.get_topic_aliases(t)
+            table.add_row(t, str(paper_count), ", ".join(aliases) if aliases else "")
         console.print(table)
     finally:
         storage.close()

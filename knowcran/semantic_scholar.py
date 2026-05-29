@@ -29,7 +29,9 @@ class SemanticScholarClient:
         self._last_request_time = 0.0
         self._raw_dir = raw_dir
         self._raw_dir.mkdir(parents=True, exist_ok=True)
-        self._client = client or httpx.Client(timeout=30.0)
+        # Explicit timeout configuration: connect, read, write, pool
+        timeout = httpx.Timeout(connect=30.0, read=120.0, write=30.0, pool=30.0)
+        self._client = client or httpx.Client(timeout=timeout)
         self._owns_client = client is None
 
     def _headers(self) -> dict[str, str]:
@@ -51,17 +53,29 @@ class SemanticScholarClient:
             return json.loads(cache_file.read_text(encoding="utf-8"))
 
         for attempt in range(_MAX_RETRIES):
-            self._wait_rate_limit()
-            resp = self._client.get(url, headers=self._headers(), params=params)
-            if resp.status_code == 200:
-                data = resp.json()
-                cache_file.write_text(json.dumps(data, indent=2), encoding="utf-8")
-                return data
-            if resp.status_code in _RETRY_STATUS:
-                wait = (attempt + 1) * 2
-                time.sleep(wait)
-                continue
-            resp.raise_for_status()
+            try:
+                self._wait_rate_limit()
+                resp = self._client.get(url, headers=self._headers(), params=params)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    cache_file.write_text(json.dumps(data, indent=2), encoding="utf-8")
+                    return data
+                if resp.status_code == 429:
+                    # Honor Retry-After header
+                    retry_after = resp.headers.get("Retry-After")
+                    wait = int(retry_after) if retry_after else (attempt + 1) * 2
+                    time.sleep(wait)
+                    continue
+                if resp.status_code in _RETRY_STATUS:
+                    wait = (attempt + 1) * 2
+                    time.sleep(wait)
+                    continue
+                resp.raise_for_status()
+            except (httpx.TimeoutException, httpx.ConnectError, httpx.NetworkError, httpx.TransportError) as e:
+                if attempt < _MAX_RETRIES - 1:
+                    time.sleep((attempt + 1) * 2)
+                    continue
+                raise
         resp.raise_for_status()  # type: ignore[union-attr]
         return {}
 
@@ -74,17 +88,28 @@ class SemanticScholarClient:
             return json.loads(cache_file.read_text(encoding="utf-8"))
 
         for attempt in range(_MAX_RETRIES):
-            self._wait_rate_limit()
-            resp = self._client.post(url, headers=self._headers(), json=body, params=params)
-            if resp.status_code == 200:
-                data = resp.json()
-                cache_file.write_text(json.dumps(data, indent=2), encoding="utf-8")
-                return data
-            if resp.status_code in _RETRY_STATUS:
-                wait = (attempt + 1) * 2
-                time.sleep(wait)
-                continue
-            resp.raise_for_status()
+            try:
+                self._wait_rate_limit()
+                resp = self._client.post(url, headers=self._headers(), json=body, params=params)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    cache_file.write_text(json.dumps(data, indent=2), encoding="utf-8")
+                    return data
+                if resp.status_code == 429:
+                    retry_after = resp.headers.get("Retry-After")
+                    wait = int(retry_after) if retry_after else (attempt + 1) * 2
+                    time.sleep(wait)
+                    continue
+                if resp.status_code in _RETRY_STATUS:
+                    wait = (attempt + 1) * 2
+                    time.sleep(wait)
+                    continue
+                resp.raise_for_status()
+            except (httpx.TimeoutException, httpx.ConnectError, httpx.NetworkError, httpx.TransportError) as e:
+                if attempt < _MAX_RETRIES - 1:
+                    time.sleep((attempt + 1) * 2)
+                    continue
+                raise
         resp.raise_for_status()  # type: ignore[union-attr]
         return {}
 

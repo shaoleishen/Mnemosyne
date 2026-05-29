@@ -18,6 +18,96 @@ def slugify(text: str, max_len: int = 80) -> str:
     return text[:max_len]
 
 
+def normalize_query(q: str) -> str:
+    """Normalize a query string for deduplication.
+
+    - Lowercase
+    - Normalize British/American spelling
+    - Collapse punctuation and whitespace
+    - Map known abbreviations
+    """
+    q = q.lower().strip()
+    # Normalize common abbreviations
+    abbreviations = {
+        "ich": "intracerebral hemorrhage",
+        "intracerebral haemorrhage": "intracerebral hemorrhage",
+        "sah": "subarachnoid hemorrhage",
+        "tbi": "traumatic brain injury",
+        "ais": "acute ischemic stroke",
+    }
+    for abbr, full in abbreviations.items():
+        if q == abbr:
+            q = full
+            break
+    # Collapse punctuation and whitespace
+    q = re.sub(r"[^\w\s]", " ", q)
+    q = re.sub(r"\s+", " ", q).strip()
+    return q
+
+
+def query_fingerprint(query: str, endpoint: str, fields: str, limit: int) -> str:
+    """Compute a stable fingerprint for a discovery query."""
+    normalized = normalize_query(query)
+    raw = f"{normalized}:{endpoint}:{fields}:{limit}"
+    return hashlib.sha256(raw.encode()).hexdigest()[:16]
+
+
+def normalize_doi(doi: str) -> str:
+    """Normalize a DOI for deduplication."""
+    doi = doi.lower().strip()
+    doi = re.sub(r"^https?://(dx\.)?doi\.org/", "", doi)
+    doi = re.sub(r"^doi:", "", doi)
+    return doi
+
+
+def normalize_pmid(pmid: str) -> str:
+    """Normalize a PMID for deduplication."""
+    return re.sub(r"[^\d]", "", str(pmid))
+
+
+def paper_identity_aliases(paper: dict[str, Any]) -> list[tuple[str, str]]:
+    """Extract all identity aliases from a paper record.
+
+    Returns list of (alias_type, alias_value) tuples.
+    """
+    aliases = []
+    ext = paper.get("externalIds") or {}
+
+    # S2 paper ID
+    pid = paper.get("paperId")
+    if pid:
+        aliases.append(("s2", pid))
+
+    # DOI
+    doi = ext.get("DOI") or paper.get("doi")
+    if doi:
+        aliases.append(("doi", normalize_doi(doi)))
+
+    # PMID
+    pmid = ext.get("PubMed") or paper.get("pmid")
+    if pmid:
+        aliases.append(("pmid", normalize_pmid(pmid)))
+
+    # arXiv
+    arxiv = ext.get("ArXiv") or paper.get("arxiv_id")
+    if arxiv:
+        aliases.append(("arxiv", arxiv.lower().strip()))
+
+    # Title hash
+    title = paper.get("title", "")
+    if title:
+        title_hash = hashlib.sha256(normalize_query(title).encode()).hexdigest()[:16]
+        aliases.append(("title_hash", title_hash))
+
+    # Title+year hash
+    year = paper.get("year")
+    if title and year:
+        ty_hash = hashlib.sha256(f"{normalize_query(title)}:{year}".encode()).hexdigest()[:16]
+        aliases.append(("title_year_hash", ty_hash))
+
+    return aliases
+
+
 def normalize_title(title: str) -> str:
     t = title.lower().strip()
     t = re.sub(r"[^\w\s]", "", t)

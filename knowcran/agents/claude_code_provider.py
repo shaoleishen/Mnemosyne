@@ -71,19 +71,32 @@ class ClaudeCodeProvider:
         return Path(self.claude_bin).exists()
 
     def run(self, task: AgentTask) -> AgentResult:
-        """Execute a task via Claude Code subprocess."""
+        """Execute a task via Claude Code subprocess with idle timeout."""
+        from knowcran.agents.subprocess_runner import run_with_idle_timeout
+
         prompt = build_prompt_for_task(task)
+        task_timeout = task.timeout_seconds or self.timeout_seconds
         last_error: Exception | None = None
 
         for attempt in range(self.max_retries + 1):
             try:
                 cmd = [self.claude_bin, "-p", "--output-format", "json", prompt]
-                result = subprocess.run(
+                result = run_with_idle_timeout(
                     cmd,
-                    capture_output=True,
-                    text=True,
-                    timeout=self.timeout_seconds,
+                    idle_timeout_seconds=task_timeout,
                 )
+
+                if result.idle_timed_out:
+                    last_error = AgentProviderError(f"Claude Code idle timeout after {task_timeout}s")
+                    if attempt < self.max_retries:
+                        time.sleep(2 ** attempt)
+                    continue
+
+                if result.timed_out:
+                    last_error = AgentProviderError(f"Claude Code hard timeout")
+                    if attempt < self.max_retries:
+                        time.sleep(2 ** attempt)
+                    continue
 
                 if result.returncode != 0:
                     error_msg = result.stderr.strip() or f"Claude Code exited with code {result.returncode}"
@@ -103,8 +116,6 @@ class ClaudeCodeProvider:
                     raw_output=output,
                 )
 
-            except subprocess.TimeoutExpired:
-                last_error = AgentProviderError(f"Claude Code timed out after {self.timeout_seconds}s")
             except (AgentProviderError, AgentSchemaError) as e:
                 last_error = e
 

@@ -233,22 +233,61 @@ def read_topic(topic: str, limit: int = 20, storage: Storage | None = None,
             papers = storage.get_topic_papers(topic, limit=limit)
         else:
             papers = storage.get_papers_by_topic(topic, limit=limit)
-        all_claims: list[Claim] = []
-        for p in papers:
-            if agent_provider is not None:
-                from knowcran.extraction import extract_paper_claims
-                claims, extraction_method = extract_paper_claims(p, topic, agent_provider=agent_provider, storage=storage)
-            elif llm_provider is not None:
-                from knowcran.extraction import extract_paper_claims
-                claims, extraction_method = extract_paper_claims(p, topic, provider=llm_provider)
-            else:
-                claims = _extract_claims(p, topic)
-                extraction_method = "deterministic"
 
-            # Use idempotent upsert to avoid duplicates
-            for claim in claims:
-                storage.upsert_claim_idempotent(claim, extraction_method=extraction_method)
-            all_claims.extend(claims)
+        all_claims: list[Claim] = []
+
+        # Use BulkExecutor for agent-based extraction (parallel chunked)
+        if agent_provider is not None:
+            from knowcran.agents.bulk_executor import BulkExecutor, format_workflow_summary
+            from knowcran.agents.deterministic_provider import DeterministicProvider
+            from knowcran.extraction import _parse_extraction_output
+
+            paper_dicts = [{"paper_id": p["paper_id"], "title": p.get("title", ""), "abstract": p.get("abstract", "")} for p in papers]
+            executor = BulkExecutor(
+                provider=agent_provider,
+                fallback_provider=DeterministicProvider(),
+                storage=storage,
+            )
+            claims_dicts, summary = executor.execute_extraction(topic, paper_dicts, storage)
+            console.print(f"  [dim]{format_workflow_summary(summary)}[/dim]")
+
+            # Convert extracted evidence items to Claim objects
+            for item in claims_dicts:
+                paper_id = item.get("_paper_id", "")
+                provider_name = item.get("_provider", "deterministic")
+                claim_text = item.get("claim_text", "").strip()
+                if not claim_text:
+                    continue
+                evidence_type = item.get("evidence_type", "abstract_summary")
+                claim_id = _deterministic_claim_id(paper_id, topic, evidence_type, claim_text, item.get("source_location", "abstract"))
+                claim = Claim(
+                    claim_id=claim_id,
+                    paper_id=paper_id,
+                    claim_text=claim_text,
+                    evidence_type=evidence_type,
+                    confidence=item.get("confidence", 0.5),
+                    source_location=item.get("source_location", "abstract"),
+                    topic=topic,
+                )
+                storage.upsert_claim_idempotent(claim, extraction_method=f"agent:{provider_name}")
+                all_claims.append(claim)
+
+        elif llm_provider is not None:
+            # Legacy LLM provider - extract serially
+            from knowcran.extraction import extract_paper_claims
+            for p in papers:
+                claims, extraction_method = extract_paper_claims(p, topic, provider=llm_provider)
+                for claim in claims:
+                    storage.upsert_claim_idempotent(claim, extraction_method=extraction_method)
+                all_claims.extend(claims)
+        else:
+            # Deterministic extraction
+            for p in papers:
+                claims = _extract_claims(p, topic)
+                for claim in claims:
+                    storage.upsert_claim_idempotent(claim, extraction_method="deterministic")
+                all_claims.extend(claims)
+
         return all_claims
     finally:
         if own:

@@ -235,14 +235,30 @@ class BulkExecutor:
         return all_claims, summary
 
     def _execute_parallel(self, tasks: list[tuple[int, AgentTask]], label: str) -> list[ChunkResult]:
-        """Execute tasks in parallel using ThreadPoolExecutor."""
+        """Execute tasks in parallel using ThreadPoolExecutor with circuit breaker."""
         results: list[ChunkResult] = [None] * len(tasks)  # type: ignore
         max_workers = min(self.config.max_workers, len(tasks))
+        timeout_count = 0
+
+        def _run_with_circuit_breaker(idx: int, task: AgentTask) -> ChunkResult:
+            nonlocal timeout_count
+            if timeout_count >= self.config.max_timeouts:
+                return ChunkResult(
+                    chunk_id=task.task_id,
+                    task_type=task.task_type,
+                    input_count=1,
+                    status="skipped_after_timeout_budget",
+                    provider=self.provider.name,
+                    error="Skipped due to timeout budget exhaustion",
+                )
+            result = self._execute_with_retry(task, task.timeout_seconds)
+            if result.status == "timeout":
+                timeout_count += 1
+            return result
 
         if max_workers <= 1 or len(tasks) <= 1:
-            # Sequential execution for single task or single worker
             for idx, task in tasks:
-                results[idx] = self._execute_with_retry(task, task.timeout_seconds)
+                results[idx] = _run_with_circuit_breaker(idx, task)
                 console.print(f"  {label} {idx + 1}/{len(tasks)} done")
             return results
 
@@ -251,7 +267,7 @@ class BulkExecutor:
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             future_to_idx = {}
             for idx, task in tasks:
-                future = executor.submit(self._execute_with_retry, task, task.timeout_seconds)
+                future = executor.submit(_run_with_circuit_breaker, idx, task)
                 future_to_idx[future] = idx
 
             completed = 0
@@ -276,14 +292,33 @@ class BulkExecutor:
         return results
 
     def _execute_parallel_with_papers(self, tasks: list[tuple[int, AgentTask, dict[str, Any]]], label: str) -> list[tuple[ChunkResult, dict[str, Any]]]:
-        """Execute tasks in parallel, preserving paper association."""
+        """Execute tasks in parallel with circuit breaker, preserving paper association."""
         results: list[tuple[ChunkResult, dict[str, Any]]] = [None] * len(tasks)  # type: ignore
         max_workers = min(self.config.max_workers, len(tasks))
+        timeout_count = 0
+
+        def _run_with_circuit_breaker(idx: int, task: AgentTask, paper: dict[str, Any]) -> tuple[ChunkResult, dict[str, Any]]:
+            nonlocal timeout_count
+            if timeout_count >= self.config.max_timeouts:
+                return (
+                    ChunkResult(
+                        chunk_id=task.task_id,
+                        task_type=task.task_type,
+                        input_count=1,
+                        status="skipped_after_timeout_budget",
+                        provider=self.provider.name,
+                        error="Skipped due to timeout budget exhaustion",
+                    ),
+                    paper,
+                )
+            result = self._execute_with_retry(task, task.timeout_seconds)
+            if result.status == "timeout":
+                timeout_count += 1
+            return (result, paper)
 
         if max_workers <= 1 or len(tasks) <= 1:
             for idx, task, paper in tasks:
-                result = self._execute_with_retry(task, task.timeout_seconds)
-                results[idx] = (result, paper)
+                results[idx] = _run_with_circuit_breaker(idx, task, paper)
                 if (idx + 1) % 10 == 0:
                     console.print(f"  {label} {idx + 1}/{len(tasks)} done")
             return results
@@ -293,15 +328,15 @@ class BulkExecutor:
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             future_to_idx = {}
             for idx, task, paper in tasks:
-                future = executor.submit(self._execute_with_retry, task, task.timeout_seconds)
+                future = executor.submit(_run_with_circuit_breaker, idx, task, paper)
                 future_to_idx[future] = (idx, paper)
 
             completed = 0
             for future in as_completed(future_to_idx):
                 idx, paper = future_to_idx[future]
                 try:
-                    result = future.result()
-                    results[idx] = (result, paper)
+                    # _run_with_circuit_breaker already returns (ChunkResult, paper)
+                    results[idx] = future.result()
                 except Exception as e:
                     results[idx] = (
                         ChunkResult(
@@ -366,17 +401,33 @@ class BulkExecutor:
             try:
                 fallback_result = self.fallback_provider.run(task)
                 duration_ms = int((time.time() - start_time) * 1000)
-                return ChunkResult(
-                    chunk_id=task.task_id,
-                    task_type=task.task_type,
-                    input_count=len(task.input_json.get("papers", [])) or 1,
-                    status="fallback_used",
-                    provider=fallback_result.provider,
-                    fallback_from=self.provider.name,
-                    duration_ms=duration_ms,
-                    retry_count=retry_count,
-                    output=fallback_result.output_json,
-                )
+
+                # Only count as fallback_used if fallback succeeded
+                if fallback_result.status == "ok" and fallback_result.output_json:
+                    return ChunkResult(
+                        chunk_id=task.task_id,
+                        task_type=task.task_type,
+                        input_count=len(task.input_json.get("papers", [])) or 1,
+                        status="fallback_used",
+                        provider=fallback_result.provider,
+                        fallback_from=self.provider.name,
+                        duration_ms=duration_ms,
+                        retry_count=retry_count,
+                        output=fallback_result.output_json,
+                    )
+                else:
+                    # Fallback also failed - preserve primary error
+                    return ChunkResult(
+                        chunk_id=task.task_id,
+                        task_type=task.task_type,
+                        input_count=len(task.input_json.get("papers", [])) or 1,
+                        status="provider_error",
+                        provider=self.provider.name,
+                        fallback_from=self.provider.name,
+                        duration_ms=duration_ms,
+                        retry_count=retry_count,
+                        error=f"{last_error}; fallback also failed: {fallback_result.error}",
+                    )
             except Exception:
                 pass
 

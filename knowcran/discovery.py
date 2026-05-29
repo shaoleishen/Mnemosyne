@@ -7,6 +7,7 @@ from typing import Any
 
 from rich.console import Console
 
+from knowcran.config import DEFAULT_FIELDS
 from knowcran.models import PaperLink, PaperRecord
 from knowcran.semantic_scholar import SemanticScholarClient
 from knowcran.storage import Storage
@@ -65,6 +66,9 @@ def discover(
     storage: Storage | None = None,
     llm_provider: Any | None = None,
     agent_provider: Any | None = None,
+    resume: bool = False,
+    force: bool = False,
+    dry_run: bool = False,
 ) -> list[PaperRecord]:
     own_client = client is None
     own_storage = storage is None
@@ -72,17 +76,82 @@ def discover(
     storage = storage or Storage()
 
     try:
+        from knowcran.utils import normalize_query, query_fingerprint
+
+        # Resolve canonical topic
+        canonical_topic = storage.resolve_topic(question)
+
         queries = generate_queries(question)
         candidate_pool = max(20, ceil(limit * 2 / len(queries)))
-        console.print(f"[bold]Running {len(queries)} queries for: {question} (limit {limit} total)[/bold]")
+
+        # Plan queries and check ledger
+        planned_queries = []
+        skipped_count = 0
+        for q in queries:
+            qf = query_fingerprint(q, "search_bulk", DEFAULT_FIELDS, candidate_pool)
+            existing = storage.get_discovery_query(canonical_topic, qf, "search_bulk", DEFAULT_FIELDS)
+
+            if existing and existing["status"] == "completed" and not force:
+                skipped_count += 1
+                continue
+            elif existing and existing["status"] == "partial" and resume:
+                planned_queries.append((q, qf, existing.get("cursor_token")))
+            elif existing and existing["status"] in ("failed_retryable",) and resume:
+                # Check if retry time has passed
+                from datetime import datetime, timezone
+                next_retry = existing.get("next_retry_at")
+                if next_retry:
+                    try:
+                        retry_time = datetime.fromisoformat(next_retry)
+                        if datetime.now(timezone.utc) < retry_time:
+                            skipped_count += 1
+                            continue
+                    except ValueError:
+                        pass
+                planned_queries.append((q, qf, None))
+            else:
+                planned_queries.append((q, qf, None))
+
+                # Register in ledger
+                qid = f"{canonical_topic[:8]}-{qf[:8]}"
+                storage.upsert_discovery_query(
+                    qid, canonical_topic, q, normalize_query(q),
+                    qf, "search_bulk", DEFAULT_FIELDS, "planned",
+                )
+
+        # Dry run: show what would be done
+        if dry_run:
+            coverage = storage.get_discovery_topic_coverage(canonical_topic)
+            console.print(f"[bold]Dry run for: {question}[/bold]")
+            console.print(f"  Canonical topic: {canonical_topic}")
+            console.print(f"  Planned query fingerprints: {len(queries)}")
+            console.print(f"  Already completed: {skipped_count}")
+            console.print(f"  Will fetch: {len(planned_queries)}")
+            console.print(f"  Known papers for topic: {coverage.get('total_papers', 0)}")
+            return []
+
+        console.print(f"[bold]Running {len(planned_queries)} queries for: {question} (limit {limit} total, {skipped_count} skipped)[/bold]")
 
         all_papers: list[dict[str, Any]] = []
-        for q in queries:
+        for q, qf, cursor_token in planned_queries:
             console.print(f"  Searching: {q}")
-            results = client.search_bulk(q, limit=candidate_pool)
-            for r in results:
-                r["_query"] = q
-            all_papers.extend(results)
+            qid = f"{canonical_topic[:8]}-{qf[:8]}"
+
+            try:
+                storage.update_discovery_query_status(qid, "running")
+                results = client.search_bulk(q, limit=candidate_pool)
+                for r in results:
+                    r["_query"] = q
+                all_papers.extend(results)
+                storage.update_discovery_query_status(qid, "completed", paper_count=len(results))
+            except Exception as e:
+                error_msg = str(e)
+                if "timeout" in error_msg.lower() or "timed out" in error_msg.lower():
+                    storage.update_discovery_query_status(qid, "failed_retryable", error=error_msg)
+                    console.print(f"    [yellow]Timeout: {error_msg}[/yellow]")
+                else:
+                    storage.update_discovery_query_status(qid, "failed_permanent", error=error_msg)
+                    console.print(f"    [red]Failed: {error_msg}[/red]")
 
         deduped = _deduplicate(all_papers)
         console.print(f"  Found {len(all_papers)} raw, {len(deduped)} unique")
@@ -135,55 +204,34 @@ def discover(
 
 
 def _agent_rerank(papers: list[PaperRecord], topic: str, provider: Any, storage: Storage) -> list[PaperRecord]:
-    """Apply agent-based reranking to adjust paper relevance scores."""
-    import hashlib
-    import json
-    import uuid
-    from datetime import datetime, timezone
-    from knowcran.agents.audit import audit_agent_run
-    from knowcran.agents.schemas import AgentTask
+    """Apply agent-based reranking using BulkExecutor for chunked parallel execution."""
+    from knowcran.agents.bulk_executor import BulkExecutor, format_workflow_summary
+    from knowcran.agents.deterministic_provider import DeterministicProvider
 
     if not papers:
         return papers
 
     try:
         paper_dicts = [{"paper_id": p.paper_id, "title": p.title, "abstract": p.abstract or ""} for p in papers]
-        task = AgentTask(
-            task_id=f"rerank-{uuid.uuid4().hex[:8]}",
-            task_type="relevance_rerank",
-            topic=topic,
-            input_json={"topic": topic, "papers": paper_dicts},
-            output_schema_name="PaperRerankOutput",
+
+        executor = BulkExecutor(
+            provider=provider,
+            fallback_provider=DeterministicProvider(),
+            storage=storage,
         )
-        result = provider.run(task)
-        audit_agent_run(task, result, storage)
 
-        if result.status != "ok" or not result.output_json:
-            console.print(f"  [yellow]Agent reranking failed: {result.error}. Keeping deterministic order.[/yellow]")
-            return papers
+        _, summary = executor.execute_rerank(topic, paper_dicts, storage)
+        console.print(f"  [dim]{format_workflow_summary(summary)}[/dim]")
 
-        decisions = result.output_json.get("decisions", [])
-        score_map: dict[str, float] = {}
-        reason_map: dict[str, str] = {}
-        for d in decisions:
-            if d.get("is_relevant", True):
-                score_map[d["paper_id"]] = d.get("score", 0.5)
-                reason_map[d["paper_id"]] = d.get("reason", "")
+        # Apply scores back to PaperRecord objects
+        score_map = {d["paper_id"]: d.get("score", 0.5) for d in
+                     (chunk.output.get("decisions", []) if chunk.output else []
+                      for chunk in summary.chunks if chunk.status in ("completed", "fallback_used"))
+                     for d in chunk.output.get("decisions", [])}
 
         for p in papers:
             if p.paper_id in score_map:
-                llm_score = score_map[p.paper_id]
-                p.relevance_score = round((p.relevance_score + llm_score) / 2, 4)
-
-        # Store agent rerun info in topic_papers
-        for p in papers:
-            if p.paper_id in score_map:
-                storage.insert_topic_paper(
-                    topic, p.paper_id, source=f"agent:{provider.name}",
-                    relevance_score=p.relevance_score,
-                    llm_relevance_score=score_map[p.paper_id],
-                    llm_relevance_reason=reason_map.get(p.paper_id, ""),
-                )
+                p.relevance_score = round((p.relevance_score + score_map[p.paper_id]) / 2, 4)
 
         papers.sort(key=lambda x: x.relevance_score, reverse=True)
         console.print(f"  Agent reranked {len(papers)} papers via {provider.name}")

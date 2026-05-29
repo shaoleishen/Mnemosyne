@@ -12,6 +12,7 @@ import pytest
 from knowcran.agents.base import AgentSchemaError
 from knowcran.agents.pi_print_json_provider import PiPrintJsonProvider, _extract_json, _unwrap_envelope
 from knowcran.agents.schemas import AgentTask
+from knowcran.agents.subprocess_runner import SubprocessResult
 
 
 class TestExtractJson:
@@ -102,9 +103,10 @@ class TestPiPrintJsonProvider:
 
         p = PiPrintJsonProvider(pi_bin=str(fake_bin), max_retries=0)
 
-        with patch("knowcran.agents.pi_print_json_provider.subprocess.run") as mock_run:
-            mock_run.return_value = subprocess.CompletedProcess(
-                args=[], returncode=0, stdout=json.dumps(response), stderr=""
+        with patch("knowcran.agents.pi_print_json_provider.run_with_idle_timeout") as mock_run:
+            from knowcran.agents.subprocess_runner import SubprocessResult
+            mock_run.return_value = SubprocessResult(
+                returncode=0, stdout=json.dumps(response), stderr=""
             )
             task = AgentTask(
                 task_id="t1",
@@ -125,9 +127,10 @@ class TestPiPrintJsonProvider:
 
         p = PiPrintJsonProvider(pi_bin=str(fake_bin), max_retries=0)
 
-        with patch("knowcran.agents.pi_print_json_provider.subprocess.run") as mock_run:
-            mock_run.return_value = subprocess.CompletedProcess(
-                args=[], returncode=0, stdout=json.dumps(envelope), stderr=""
+        with patch("knowcran.agents.pi_print_json_provider.run_with_idle_timeout") as mock_run:
+            from knowcran.agents.subprocess_runner import SubprocessResult
+            mock_run.return_value = SubprocessResult(
+                returncode=0, stdout=json.dumps(envelope), stderr=""
             )
             task = AgentTask(task_id="t1", task_type="health_check")
             result = p.run(task)
@@ -140,9 +143,10 @@ class TestPiPrintJsonProvider:
 
         p = PiPrintJsonProvider(pi_bin=str(fake_bin), max_retries=0)
 
-        with patch("knowcran.agents.pi_print_json_provider.subprocess.run") as mock_run:
-            mock_run.return_value = subprocess.CompletedProcess(
-                args=[], returncode=1, stdout="", stderr="Error: model not found"
+        with patch("knowcran.agents.pi_print_json_provider.run_with_idle_timeout") as mock_run:
+            from knowcran.agents.subprocess_runner import SubprocessResult
+            mock_run.return_value = SubprocessResult(
+                returncode=1, stdout="", stderr="Error: model not found"
             )
             task = AgentTask(task_id="t1", task_type="health_check")
             result = p.run(task)
@@ -155,12 +159,15 @@ class TestPiPrintJsonProvider:
 
         p = PiPrintJsonProvider(pi_bin=str(fake_bin), max_retries=0, timeout_seconds=5)
 
-        with patch("knowcran.agents.pi_print_json_provider.subprocess.run") as mock_run:
-            mock_run.side_effect = subprocess.TimeoutExpired(cmd="pi", timeout=5)
+        with patch("knowcran.agents.pi_print_json_provider.run_with_idle_timeout") as mock_run:
+            from knowcran.agents.subprocess_runner import SubprocessResult
+            mock_run.return_value = SubprocessResult(
+                returncode=-1, stdout="", stderr="[Idle timeout]", idle_timed_out=True
+            )
             task = AgentTask(task_id="t1", task_type="health_check")
             result = p.run(task)
             assert result.status == "error"
-            assert "timed out" in result.error
+            assert "idle timeout" in result.error.lower() or "timeout" in result.error.lower()
 
     def test_malformed_json_returns_schema_error(self, tmp_path):
         fake_bin = tmp_path / "pi"
@@ -168,9 +175,10 @@ class TestPiPrintJsonProvider:
 
         p = PiPrintJsonProvider(pi_bin=str(fake_bin), max_retries=0)
 
-        with patch("knowcran.agents.pi_print_json_provider.subprocess.run") as mock_run:
-            mock_run.return_value = subprocess.CompletedProcess(
-                args=[], returncode=0, stdout="Not JSON at all", stderr=""
+        with patch("knowcran.agents.pi_print_json_provider.run_with_idle_timeout") as mock_run:
+            from knowcran.agents.subprocess_runner import SubprocessResult
+            mock_run.return_value = SubprocessResult(
+                returncode=0, stdout="Not JSON at all", stderr=""
             )
             task = AgentTask(task_id="t1", task_type="health_check")
             result = p.run(task)
@@ -183,12 +191,13 @@ class TestPiPrintJsonProvider:
 
         p = PiPrintJsonProvider(pi_bin=str(fake_bin), max_retries=2)
 
-        with patch("knowcran.agents.pi_print_json_provider.subprocess.run") as mock_run, \
+        with patch("knowcran.agents.pi_print_json_provider.run_with_idle_timeout") as mock_run, \
              patch("knowcran.agents.pi_print_json_provider.time.sleep"):
+            from knowcran.agents.subprocess_runner import SubprocessResult
             mock_run.side_effect = [
-                subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr="fail1"),
-                subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr="fail2"),
-                subprocess.CompletedProcess(args=[], returncode=0, stdout=json.dumps(response), stderr=""),
+                SubprocessResult(returncode=1, stdout="", stderr="fail1"),
+                SubprocessResult(returncode=1, stdout="", stderr="fail2"),
+                SubprocessResult(returncode=0, stdout=json.dumps(response), stderr=""),
             ]
             task = AgentTask(task_id="t1", task_type="health_check")
             result = p.run(task)
@@ -201,9 +210,10 @@ class TestPiPrintJsonProvider:
 
         p = PiPrintJsonProvider(pi_bin=str(fake_bin), max_retries=0)
 
-        with patch("knowcran.agents.pi_print_json_provider.subprocess.run") as mock_run:
-            mock_run.return_value = subprocess.CompletedProcess(
-                args=[], returncode=0, stdout="", stderr=""
+        with patch("knowcran.agents.pi_print_json_provider.run_with_idle_timeout") as mock_run:
+            from knowcran.agents.subprocess_runner import SubprocessResult
+            mock_run.return_value = SubprocessResult(
+                returncode=0, stdout="", stderr=""
             )
             task = AgentTask(task_id="t1", task_type="health_check")
             result = p.run(task)

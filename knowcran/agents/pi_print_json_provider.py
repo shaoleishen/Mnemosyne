@@ -13,6 +13,7 @@ from typing import Any
 from knowcran.agents.base import AgentProviderError, AgentSchemaError
 from knowcran.agents.prompts import build_prompt_for_task
 from knowcran.agents.schemas import AgentResult, AgentTask
+from knowcran.agents.subprocess_runner import run_with_idle_timeout
 
 logger = logging.getLogger(__name__)
 
@@ -157,44 +158,43 @@ class PiPrintJsonProvider:
             cmd.extend(["--model", self.model])
         return cmd
 
-    def _run_with_prompt(self, prompt: str) -> subprocess.CompletedProcess[str]:
-        """Run Pi with prompt, using stdin for long prompts."""
+    def _run_with_prompt(self, prompt: str, task_timeout: int = 0) -> subprocess.CompletedProcess[str]:
+        """Run Pi with prompt, using stdin for long prompts and idle timeout."""
         cmd = self._build_command()
+        effective_timeout = task_timeout or self.timeout_seconds
 
         if len(prompt) > _MAX_ARGV_PROMPT_LENGTH:
-            # Use temp file for long prompts
-            with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as f:
-                f.write(prompt)
-                temp_path = f.name
-            try:
-                # Read from temp file via shell redirect
-                result = subprocess.run(
-                    f'{cmd[0]} {" ".join(cmd[1:])} < "{temp_path}"',
-                    shell=True,
-                    capture_output=True,
-                    text=True,
-                    timeout=self.timeout_seconds,
-                )
-                return result
-            finally:
-                Path(temp_path).unlink(missing_ok=True)
+            # Use stdin for long prompts
+            result = run_with_idle_timeout(
+                cmd,
+                idle_timeout_seconds=effective_timeout,
+                input_data=prompt,
+            )
         else:
             cmd.append(prompt)
-            return subprocess.run(
+            result = run_with_idle_timeout(
                 cmd,
-                capture_output=True,
-                text=True,
-                timeout=self.timeout_seconds,
+                idle_timeout_seconds=effective_timeout,
             )
+
+        # Convert to CompletedProcess-like object
+        class _Result:
+            def __init__(self, r):
+                self.returncode = r.returncode
+                self.stdout = r.stdout
+                self.stderr = r.stderr
+
+        return _Result(result)
 
     def run(self, task: AgentTask) -> AgentResult:
         """Execute a task via Pi print/JSON mode."""
         prompt = build_prompt_for_task(task)
+        task_timeout = task.timeout_seconds or self.timeout_seconds
         last_error: Exception | None = None
 
         for attempt in range(self.max_retries + 1):
             try:
-                result = self._run_with_prompt(prompt)
+                result = self._run_with_prompt(prompt, task_timeout=task_timeout)
 
                 if result.returncode != 0:
                     error_msg = result.stderr.strip() or f"Pi exited with code {result.returncode}"

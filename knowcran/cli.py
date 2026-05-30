@@ -102,7 +102,7 @@ def init(
 @app.command()
 def discover(
     question: str = typer.Argument(help="Disease or research question"),
-    limit: int = typer.Option(200, help="Max total papers across all generated queries (default 200)"),
+    limit: int = typer.Option(100, help="Max total papers across all generated queries"),
     expand: bool = typer.Option(False, help="Expand via references/citations/recommendations"),
     data_dir: str | None = typer.Option(None, "--data-dir", help="Data directory path"),
     vault_dir: str | None = typer.Option(None, "--vault-dir", help="Vault directory path"),
@@ -150,11 +150,10 @@ def read_paper_cmd(
 @app.command("read-topic")
 def read_topic_cmd(
     topic: str = typer.Argument(help="Topic to read"),
-    limit: int = typer.Option(100, help="Max papers to process (default 100, use 0 for all available)"),
+    limit: int = typer.Option(20, help="Max papers to process"),
     data_dir: str | None = typer.Option(None, "--data-dir", help="Data directory path"),
     llm: bool | None = typer.Option(None, "--llm/--no-llm", help="Enable/disable LLM extraction"),
     agent_provider: str | None = typer.Option(None, "--agent-provider", help="Agent provider name"),
-    include_parent: bool = typer.Option(False, "--include-parent", help="Include parent topic papers"),
 ) -> None:
     """Extract claims from all papers matching a topic."""
     settings = _settings(data_dir, None)
@@ -163,7 +162,7 @@ def read_topic_cmd(
     storage = Storage(db_path=settings.db_path)
     agent_prov = _get_agent_provider(settings, agent_provider, llm)
     llm_prov = _get_llm_provider(settings, llm) if agent_prov is None else None
-    claims = read_topic(topic, limit=limit, storage=storage, llm_provider=llm_prov, agent_provider=agent_prov, include_parent=include_parent)
+    claims = read_topic(topic, limit=limit, storage=storage, llm_provider=llm_prov, agent_provider=agent_prov)
     console.print(f"[green]Extracted {len(claims)} claims from topic papers.[/green]")
 
 
@@ -185,12 +184,11 @@ def export_obsidian_cmd(
 @app.command()
 def review(
     topic: str = typer.Argument(help="Topic to review"),
-    max_papers: int = typer.Option(0, help="Max papers for review (0=auto, uses all available up to 500)"),
+    max_papers: int = typer.Option(20, help="Max papers for review"),
     data_dir: str | None = typer.Option(None, "--data-dir", help="Data directory path"),
     vault_dir: str | None = typer.Option(None, "--vault-dir", help="Vault directory path"),
     llm: bool | None = typer.Option(None, "--llm/--no-llm", help="Enable/disable LLM review synthesis"),
     agent_provider: str | None = typer.Option(None, "--agent-provider", help="Agent provider name"),
-    include_parent: bool = typer.Option(False, "--include-parent", help="Include parent topic papers"),
 ) -> None:
     """Generate a literature review from stored claims."""
     settings = _settings(data_dir, vault_dir)
@@ -199,7 +197,7 @@ def review(
     storage = Storage(db_path=settings.db_path)
     agent_prov = _get_agent_provider(settings, agent_provider, llm)
     llm_prov = _get_llm_provider(settings, llm) if agent_prov is None else None
-    output = do_review(topic, max_papers=max_papers, storage=storage, vault_dir=settings.vault_dir, llm_provider=llm_prov, agent_provider=agent_prov, include_parent=include_parent)
+    output = do_review(topic, max_papers=max_papers, storage=storage, vault_dir=settings.vault_dir, llm_provider=llm_prov, agent_provider=agent_prov)
     console.print(f"[green]Review generated with {len(output.evidence_matrix)} evidence items and {len(output.paper_ids)} papers.[/green]")
 
 
@@ -477,7 +475,7 @@ def serve_mcp_curate_cmd() -> None:
 
 @app.command("serve-mcp-admin")
 def serve_mcp_admin_cmd() -> None:
-    """Start admin MCP server (all tools + metadata repair/dedupe). Local human use only."""
+    """Start admin MCP server (local human maintenance only)."""
     from knowcran.server.mcp import serve_mcp_admin
     serve_mcp_admin()
 

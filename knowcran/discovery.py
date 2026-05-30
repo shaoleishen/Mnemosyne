@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import random
-from datetime import datetime, timedelta, timezone
 from math import ceil
 from typing import Any
 
@@ -121,19 +119,6 @@ def discover(
                     qf, "search_bulk", DEFAULT_FIELDS, "planned",
                 )
 
-        # If all queries already completed and not forcing, return existing topic papers
-        if not planned_queries and skipped_count > 0 and not force:
-            console.print(f"[bold]All {skipped_count} queries already completed for: {question}[/bold]")
-            if storage.has_topic_papers(canonical_topic):
-                existing_papers = storage.get_topic_papers(canonical_topic, limit=limit)
-                console.print(f"  Returning {len(existing_papers)} existing topic papers")
-                return [PaperRecord(**p) for p in existing_papers]
-            elif storage.has_topic_papers(question):
-                existing_papers = storage.get_topic_papers(question, limit=limit)
-                console.print(f"  Returning {len(existing_papers)} existing topic papers")
-                return [PaperRecord(**p) for p in existing_papers]
-            return []
-
         # Dry run: show what would be done
         if dry_run:
             coverage = storage.get_discovery_topic_coverage(canonical_topic)
@@ -161,15 +146,9 @@ def discover(
                 storage.update_discovery_query_status(qid, "completed", paper_count=len(results))
             except Exception as e:
                 error_msg = str(e)
-                if "timeout" in error_msg.lower() or "timed out" in error_msg.lower() or "429" in error_msg:
-                    # Exponential backoff with jitter: 30s * 2^attempts + random 0-15s
-                    existing_q = storage.get_discovery_query(canonical_topic, qf, "search_bulk", DEFAULT_FIELDS)
-                    attempts = (existing_q.get("attempts", 0) if existing_q else 0) + 1
-                    backoff_seconds = min(30 * (2 ** attempts), 3600)  # Cap at 1 hour
-                    jitter = random.uniform(0, 15)
-                    next_retry = (datetime.now(timezone.utc) + timedelta(seconds=backoff_seconds + jitter)).isoformat()
-                    storage.update_discovery_query_status(qid, "failed_retryable", error=error_msg, next_retry_at=next_retry)
-                    console.print(f"    [yellow]Retryable error (backoff {backoff_seconds:.0f}s): {error_msg}[/yellow]")
+                if "timeout" in error_msg.lower() or "timed out" in error_msg.lower():
+                    storage.update_discovery_query_status(qid, "failed_retryable", error=error_msg)
+                    console.print(f"    [yellow]Timeout: {error_msg}[/yellow]")
                 else:
                     storage.update_discovery_query_status(qid, "failed_permanent", error=error_msg)
                     console.print(f"    [red]Failed: {error_msg}[/red]")
@@ -193,22 +172,23 @@ def discover(
             ranked = _llm_rerank(ranked, question, llm_provider, storage)
 
         storage.upsert_papers(ranked)
-        # Use canonical_topic for topic_papers storage (the resolved alias)
         storage.insert_topic_papers(
-            canonical_topic,
+            question,
             [p.paper_id for p in ranked],
             source="discover",
             scores=[p.relevance_score for p in ranked],
         )
 
-        # If user query differs from canonical, also store under user's topic
-        if canonical_topic != question:
-            storage.insert_topic_papers(
-                question,
-                [p.paper_id for p in ranked],
-                source="discover",
-                scores=[p.relevance_score for p in ranked],
-            )
+        # Store topic alias if this is a subtopic query
+        # e.g., "intracerebral hemorrhage anticoagulation reversal" -> "intracerebral hemorrhage"
+        words = question.lower().split()
+        if len(words) > 2:
+            # Try to find a canonical topic that is a prefix of this query
+            canonical_topics = storage.get_canonical_topics()
+            for ct in canonical_topics:
+                if question.startswith(ct) and question != ct:
+                    storage.add_topic_alias(question, ct)
+                    break
 
         console.print(f"  Saved {len(ranked)} papers to database")
 
@@ -224,11 +204,7 @@ def discover(
 
 
 def _agent_rerank(papers: list[PaperRecord], topic: str, provider: Any, storage: Storage) -> list[PaperRecord]:
-    """Apply agent-based reranking using BulkExecutor for chunked parallel execution.
-
-    execute_rerank() already applies scores to the paper dicts and returns them.
-    We convert PaperRecord -> dict, run execute_rerank, then map scores back.
-    """
+    """Apply agent-based reranking using BulkExecutor for chunked parallel execution."""
     from knowcran.agents.bulk_executor import BulkExecutor, format_workflow_summary
     from knowcran.agents.deterministic_provider import DeterministicProvider
 
@@ -244,22 +220,18 @@ def _agent_rerank(papers: list[PaperRecord], topic: str, provider: Any, storage:
             storage=storage,
         )
 
-        # execute_rerank returns updated paper dicts with scores applied
-        updated_dicts, summary = executor.execute_rerank(topic, paper_dicts, storage)
+        _, summary = executor.execute_rerank(topic, paper_dicts, storage)
         console.print(f"  [dim]{format_workflow_summary(summary)}[/dim]")
 
-        # Build score map from the returned dicts (scores already applied by execute_rerank)
-        score_map: dict[str, float] = {}
-        for d in updated_dicts:
-            pid = d.get("paper_id", "")
-            score = d.get("relevance_score")
-            if pid and score is not None:
-                score_map[pid] = score
-
         # Apply scores back to PaperRecord objects
+        score_map = {d["paper_id"]: d.get("score", 0.5) for d in
+                     (chunk.output.get("decisions", []) if chunk.output else []
+                      for chunk in summary.chunks if chunk.status in ("completed", "fallback_used"))
+                     for d in chunk.output.get("decisions", [])}
+
         for p in papers:
             if p.paper_id in score_map:
-                p.relevance_score = score_map[p.paper_id]
+                p.relevance_score = round((p.relevance_score + score_map[p.paper_id]) / 2, 4)
 
         papers.sort(key=lambda x: x.relevance_score, reverse=True)
         console.print(f"  Agent reranked {len(papers)} papers via {provider.name}")

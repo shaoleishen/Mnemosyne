@@ -85,10 +85,6 @@ def _extract_claims(paper: dict[str, Any], topic: str | None = None) -> list[Cla
     cleaned = _clean_abstract_labels(abstract)
     sentences = _split_sentences(cleaned)
 
-    # Generate citation_key from paper metadata
-    from knowcran.utils import citation_key as gen_citation_key
-    ck = gen_citation_key(paper)
-
     claims: list[Claim] = []
 
     # abstract_summary: first 1-2 sentences
@@ -102,9 +98,6 @@ def _extract_claims(paper: dict[str, Any], topic: str | None = None) -> list[Cla
             confidence=0.8,
             source_location="abstract",
             topic=topic,
-            citation_key=ck,
-            evidence_status="abstract_only",
-            source_quote=summary_text[:300],
         ))
 
     # method
@@ -119,9 +112,6 @@ def _extract_claims(paper: dict[str, Any], topic: str | None = None) -> list[Cla
             confidence=0.7,
             source_location="abstract",
             topic=topic,
-            citation_key=ck,
-            evidence_status="abstract_only",
-            source_quote=method_text[:300],
         ))
 
     # result - differentiated by evidence strength
@@ -140,9 +130,6 @@ def _extract_claims(paper: dict[str, Any], topic: str | None = None) -> list[Cla
             confidence=confidence,
             source_location="abstract",
             topic=topic,
-            citation_key=ck,
-            evidence_status="abstract_only",
-            source_quote=result_text[:300],
         ))
 
     # limitation
@@ -157,9 +144,6 @@ def _extract_claims(paper: dict[str, Any], topic: str | None = None) -> list[Cla
             confidence=0.6,
             source_location="abstract",
             topic=topic,
-            citation_key=ck,
-            evidence_status="abstract_only",
-            source_quote=limit_text[:300],
         ))
     else:
         placeholder = "Needs full text review for limitations"
@@ -171,9 +155,6 @@ def _extract_claims(paper: dict[str, Any], topic: str | None = None) -> list[Cla
             confidence=0.3,
             source_location="abstract",
             topic=topic,
-            citation_key=ck,
-            evidence_status="abstract_only",
-            source_quote="",
         ))
 
     # open_question - biomedical-aware, paper-specific
@@ -212,9 +193,6 @@ def _extract_claims(paper: dict[str, Any], topic: str | None = None) -> list[Cla
             confidence=0.5,
             source_location="abstract",
             topic=topic,
-            citation_key=ck,
-            evidence_status="abstract_only",
-            source_quote="",
         ))
 
     return claims
@@ -238,36 +216,23 @@ def read_paper(paper_id: str, topic: str | None = None, storage: Storage | None 
 
 def read_topic(topic: str, limit: int = 20, storage: Storage | None = None,
                llm_provider: Any | None = None,
-               agent_provider: Any | None = None,
-               include_parent: bool = False) -> list[Claim]:
+               agent_provider: Any | None = None) -> list[Claim]:
     own = storage is None
     storage = storage or Storage()
     try:
-        # effective_topic: default is user input, only alias changes it
+        # Resolve topic aliases
         resolved_topic = storage.resolve_topic(topic)
-        effective_topic = resolved_topic  # Only differs from topic if explicitly aliased
-
-        if effective_topic != topic:
+        if resolved_topic != topic:
             from rich.console import Console
-            Console().print(f"  [dim]Resolved topic '{topic}' -> '{effective_topic}' (alias)[/dim]")
+            Console().print(f"  [dim]Resolved topic '{topic}' -> '{resolved_topic}'[/dim]")
 
         # Use explicit topic membership if available, fall back to text search
-        if storage.has_topic_papers(effective_topic):
-            papers = storage.get_topic_papers(effective_topic, limit=limit)
+        if storage.has_topic_papers(resolved_topic):
+            papers = storage.get_topic_papers(resolved_topic, limit=limit)
         elif storage.has_topic_papers(topic):
             papers = storage.get_topic_papers(topic, limit=limit)
         else:
             papers = storage.get_papers_by_topic(topic, limit=limit)
-
-        # Only include parent papers if explicitly requested
-        if include_parent:
-            parent_topics = storage.get_parent_topics(topic)
-            for parent in parent_topics:
-                parent_papers = storage.get_topic_papers(parent, limit=limit // 2)
-                existing_ids = {p["paper_id"] for p in papers}
-                for pp in parent_papers:
-                    if pp["paper_id"] not in existing_ids:
-                        papers.append(pp)
 
         all_claims: list[Claim] = []
 
@@ -284,24 +249,15 @@ def read_topic(topic: str, limit: int = 20, storage: Storage | None = None,
                 storage=storage,
             )
             claims_dicts, summary = executor.execute_extraction(topic, paper_dicts, storage)
-            from rich.console import Console
-            Console().print(f"  [dim]{format_workflow_summary(summary)}[/dim]")
+            console.print(f"  [dim]{format_workflow_summary(summary)}[/dim]")
 
             # Convert extracted evidence items to Claim objects
-            paper_map = {p["paper_id"]: p for p in papers}
             for item in claims_dicts:
                 paper_id = item.get("_paper_id", "")
                 provider_name = item.get("_provider", "deterministic")
                 claim_text = item.get("claim_text", "").strip()
                 if not claim_text:
                     continue
-
-                paper = paper_map.get(paper_id)
-                ck = None
-                if paper:
-                    from knowcran.utils import citation_key as gen_citation_key
-                    ck = gen_citation_key(paper)
-
                 evidence_type = item.get("evidence_type", "abstract_summary")
                 claim_id = _deterministic_claim_id(paper_id, topic, evidence_type, claim_text, item.get("source_location", "abstract"))
                 claim = Claim(
@@ -312,10 +268,6 @@ def read_topic(topic: str, limit: int = 20, storage: Storage | None = None,
                     confidence=item.get("confidence", 0.5),
                     source_location=item.get("source_location", "abstract"),
                     topic=topic,
-                    citation_key=item.get("citation_key") or ck,
-                    evidence_status=item.get("evidence_status") or "abstract_only",
-                    source_quote=item.get("source_quote") or (claim_text if item.get("source_location") != "abstract" else ""),
-                    source_span_json=item.get("source_span_json"),
                 )
                 storage.upsert_claim_idempotent(claim, extraction_method=f"agent:{provider_name}")
                 all_claims.append(claim)

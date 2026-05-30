@@ -87,9 +87,11 @@ def test_review_text_has_sections(tmp_path: Path) -> None:
     output = review("celiac disease", max_papers=5, storage=storage, vault_dir=vault_dir)
     text = output.review_text
     assert "# Literature Review: celiac disease" in text
-    assert "## Evidence Digest" in text
-    assert "## Thematic Synthesis" in text
-    assert "## Gap Map" in text
+    assert "## Background" in text
+    assert "## Main Evidence" in text
+    assert "## Methods And Models" in text
+    assert "## Limitations" in text
+    assert "## Open Questions" in text
     assert "## References" in text
     storage.close()
 
@@ -147,7 +149,7 @@ def test_review_separates_placeholder_limitations(tmp_path: Path) -> None:
     output = review("celiac disease", max_papers=5, storage=storage, vault_dir=vault_dir)
     text = output.review_text
 
-    assert "## Evidence Digest" in text
+    assert "## Limitations" in text
     assert "### Full Text Review Needed" in text
     assert "Small sample size" in text
     assert "Needs full text review" in text

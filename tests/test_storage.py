@@ -77,6 +77,30 @@ def test_insert_and_get_claims(tmp_db_path: Path) -> None:
     storage.close()
 
 
+def test_insert_claim_preserves_traceability_fields(tmp_db_path: Path) -> None:
+    storage = Storage(db_path=tmp_db_path)
+    storage.upsert_paper(_make_paper())
+    storage.insert_claim(Claim(
+        claim_id="c-trace",
+        paper_id="p1",
+        claim_text="Traceable claim",
+        evidence_type="result",
+        confidence=0.9,
+        topic="test topic",
+        citation_key="Smith2023",
+        evidence_status="abstract_only",
+        source_quote="Traceable source quote",
+        source_span_json='{"start": 0, "end": 22}',
+    ))
+    claims = storage.get_claims_for_paper("p1")
+
+    assert claims[0]["citation_key"] == "Smith2023"
+    assert claims[0]["evidence_status"] == "abstract_only"
+    assert claims[0]["source_quote"] == "Traceable source quote"
+    assert claims[0]["source_span_json"] == '{"start": 0, "end": 22}'
+    storage.close()
+
+
 def test_get_papers_by_topic(tmp_db_path: Path) -> None:
     storage = Storage(db_path=tmp_db_path)
     storage.upsert_paper(_make_paper("p1", "Celiac Disease Review"))

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import random
 import time
 from pathlib import Path
 from typing import Any
@@ -15,21 +14,6 @@ from knowcran.utils import cache_key
 
 _RETRY_STATUS = {429, 500, 502, 503, 504}
 _MAX_RETRIES = 3
-
-
-def _retry_wait(attempt: int, retry_after: str | None = None) -> float:
-    """Calculate wait time with exponential backoff and jitter.
-
-    Returns the wait time in seconds. Honors Retry-After header if present.
-    """
-    if retry_after:
-        try:
-            return float(retry_after)
-        except ValueError:
-            pass
-    base = (attempt + 1) * 2
-    jitter = random.uniform(0, 1.5)
-    return base + jitter
 
 
 class SemanticScholarClient:
@@ -79,15 +63,17 @@ class SemanticScholarClient:
                 if resp.status_code == 429:
                     # Honor Retry-After header
                     retry_after = resp.headers.get("Retry-After")
-                    time.sleep(_retry_wait(attempt, retry_after))
+                    wait = int(retry_after) if retry_after else (attempt + 1) * 2
+                    time.sleep(wait)
                     continue
                 if resp.status_code in _RETRY_STATUS:
-                    time.sleep(_retry_wait(attempt))
+                    wait = (attempt + 1) * 2
+                    time.sleep(wait)
                     continue
                 resp.raise_for_status()
             except (httpx.TimeoutException, httpx.ConnectError, httpx.NetworkError, httpx.TransportError) as e:
                 if attempt < _MAX_RETRIES - 1:
-                    time.sleep(_retry_wait(attempt))
+                    time.sleep((attempt + 1) * 2)
                     continue
                 raise
         resp.raise_for_status()  # type: ignore[union-attr]
@@ -111,15 +97,17 @@ class SemanticScholarClient:
                     return data
                 if resp.status_code == 429:
                     retry_after = resp.headers.get("Retry-After")
-                    time.sleep(_retry_wait(attempt, retry_after))
+                    wait = int(retry_after) if retry_after else (attempt + 1) * 2
+                    time.sleep(wait)
                     continue
                 if resp.status_code in _RETRY_STATUS:
-                    time.sleep(_retry_wait(attempt))
+                    wait = (attempt + 1) * 2
+                    time.sleep(wait)
                     continue
                 resp.raise_for_status()
             except (httpx.TimeoutException, httpx.ConnectError, httpx.NetworkError, httpx.TransportError) as e:
                 if attempt < _MAX_RETRIES - 1:
-                    time.sleep(_retry_wait(attempt))
+                    time.sleep((attempt + 1) * 2)
                     continue
                 raise
         resp.raise_for_status()  # type: ignore[union-attr]

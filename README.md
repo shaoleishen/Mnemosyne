@@ -1,196 +1,143 @@
-# Mnemosyne
+# Mnemosyne / KnowCran
 
-**版本：v0.6.0**
+**Status: 1.0.0 production release candidate**
 
-基于 Semantic Scholar 的本地化科研文献知识库——文献发现、声明提取、证据矩阵、综述生成一站式工具。
+Mnemosyne, packaged as `knowcran`, is a local scientific evidence knowledge base for literature discovery, traceable claim extraction, evidence matrices, review drafting, Obsidian export, and MCP access from agent clients such as Codex, Claude Code, and Claude Desktop.
 
----
+The project is designed for local-first research workflows. It stores paper metadata, claims, citations, runs, and generated artifacts in SQLite and plain files. Semantic Scholar is the primary discovery source. LLM/agent extraction is optional; deterministic extraction remains the default fallback.
 
-## 功能概览
+## What 1.0.0 Means
 
-| 功能 | CLI | MCP | 说明 |
-|------|:---:|:---:|------|
-| 文献搜索 | `discover` | ✅ | Semantic Scholar 搜索，支持分页、扩展引用、断点续查 |
-| 声明提取 | `read-topic` | ✅ | 从摘要确定性提取证据声明，每条带 citation_key 和 source_quote |
-| 综述生成 | `review` | ✅ | 三段式综述（Evidence Digest / Thematic Synthesis / Gap Map），论文数和证据项自动缩放 |
-| 证据矩阵 | `export-obsidian` | ✅ | CSV/BibTeX/Markdown 输出，完整证据溯源 |
-| 审计 | - | ✅ | 答案审计：多格式引用验证、overclaim 风险检测（相关≠因果、动物→人类、不确定性缺失） |
-| MCP 服务器 | `serve-mcp` | ✅ | FastMCP 协议，readonly / curate / admin 三模式 |
-| 证据溯源 | - | ✅ | 每条 claim 带 citation_key、source_quote、evidence_status |
-| 主题树 | `topics` | ✅ | 主题别名、父子关系、子主题隔离 |
-| 运行日志 | - | ✅ | Agent/LLM/CLI 运行记录查询 |
+Version 1.0.0 is the first production-baseline release. It does not mean cloud multi-tenancy, full-text PDF ingestion, or polished academic prose generation. It does mean:
 
----
+- repeatable local install and test workflow
+- explicit Apache-2.0 license
+- stable CLI entry points: `knowcran` and `mnemosyne`
+- readonly, curate, and admin MCP profiles
+- evidence traceability through `paper_id`, `claim_id`, `citation_key`, `source_quote`, and `evidence_status`
+- SQLite migrations for existing local databases
+- cached, rate-limited Semantic Scholar access with retry behavior
+- CI-ready unit, integration, MCP, and packaging checks
 
-## 快速开始
+## Features
+
+| Area | Capability |
+| --- | --- |
+| Discovery | Search Semantic Scholar, cache raw responses, deduplicate papers, and store topic membership. |
+| Reading | Extract claims from abstracts with deterministic fallback and optional agent/LLM providers. |
+| Evidence | Build evidence matrices with citation keys, source quotes, evidence status, and coverage summaries. |
+| Review | Generate evidence digests and review drafts from stored claims. |
+| Obsidian | Export papers, claims, topics, reviews, CSV evidence matrices, and BibTeX. |
+| MCP | Serve readonly, curate, and admin MCP profiles for agent clients. |
+| Audit | Validate citations and detect common overclaim risks in generated answers. |
+
+## Installation
 
 ```bash
+python -m pip install --upgrade pip
 pip install -e ".[dev]"
 cp .env.example .env
 knowcran init
+```
 
-# 搜索文献
-knowcran discover "intracerebral hemorrhage" --limit 200
+Python 3.12 or newer is required.
 
-# 提取声明（默认 100 篇论文，0=全部）
-knowcran read-topic "intracerebral hemorrhage" --limit 100
+## Quick Start
 
-# 生成综述（默认自动使用全部可用论文，上限 500）
-knowcran review "intracerebral hemorrhage"
+```bash
+# Discover literature.
+knowcran discover "intracerebral hemorrhage" --limit 100
 
-# 查看统计
+# Extract claims. Use --limit 0 to process all available topic papers.
+knowcran read-topic "intracerebral hemorrhage" --limit 50
+
+# Generate a traceable review draft.
+knowcran review "intracerebral hemorrhage" --max-papers 50
+
+# Export Obsidian notes and review artifacts.
+knowcran export-obsidian "intracerebral hemorrhage"
+
+# Inspect local database health.
 knowcran stats
 ```
 
----
+## Configuration
 
-## 配置
+Environment variables are read from `.env`:
 
-环境变量在 `.env` 中：
+| Variable | Default | Description |
+| --- | --- | --- |
+| `SEMANTIC_SCHOLAR_API_KEY` | empty | Optional Semantic Scholar API key. |
+| `KNOWCRAN_DATA_DIR` | `data` | Directory for SQLite database and raw API cache. |
+| `KNOWCRAN_VAULT_DIR` | `vault` | Directory for Obsidian export. |
+| `KNOWCRAN_RATE_LIMIT_SECONDS` | `1.1` | Minimum delay between Semantic Scholar requests. |
+| `MNEMOSYNE_LLM_PROVIDER` | `none` | LLM provider: `none` or `claw`. |
+| `MNEMOSYNE_CLAW_BIN` | auto-detect | Optional path to the Claw binary. |
+| `MNEMOSYNE_CLAW_MODEL` | `sonnet` | Model label passed to Claw. |
+| `MNEMOSYNE_CLAW_PERMISSION_MODE` | `read-only` | Permission mode for Claw subprocess calls. |
+| `MNEMOSYNE_CLAW_TIMEOUT_SECONDS` | `600` | Timeout for LLM subprocess calls. |
+| `MNEMOSYNE_CLAW_MAX_RETRIES` | `2` | Max retries for LLM subprocess calls. |
+| `MNEMOSYNE_LLM_CACHE_DIR` | `data/raw/llm` | Directory for LLM run artifacts. |
 
-| 变量 | 默认值 | 说明 |
-|------|--------|------|
-| `SEMANTIC_SCHOLAR_API_KEY` | (空) | Semantic Scholar API 密钥（可选） |
-| `KNOWCRAN_DATA_DIR` | `data` | SQLite 数据库和 API 缓存目录 |
-| `KNOWCRAN_VAULT_DIR` | `vault` | Obsidian 笔记输出目录 |
-| `KNOWCRAN_RATE_LIMIT_SECONDS` | `1.1` | API 请求间隔（秒） |
-| `MNEMOSYNE_LLM_PROVIDER` | `none` | LLM 提供者（claw / none） |
+## MCP Server Profiles
 
----
-
-## CLI 命令
-
-```bash
-# 文献发现（默认 200 篇，可加 --expand 扩展引用）
-knowcran discover "topic" --limit 500 --expand
-
-# 声明提取（limit=0 自动使用全部可用论文）
-knowcran read-topic "topic" --limit 100
-
-# 综述生成（max-papers=0 自动缩放，上限 500）
-knowcran review "topic" --max-papers 100
-
-# Obsidian 导出
-knowcran export-obsidian "topic"
-
-# 数据库统计
-knowcran stats
-
-# 查看单篇论文
-knowcran show-paper PAPER_ID
-
-# MCP 服务器
-knowcran serve-mcp
-```
-
----
-
-## MCP 服务器
-
-Mnemosyne 提供 FastMCP 协议服务器，可作为 Claude Code、Claude Desktop 或其他 MCP 客户端的工具。
-
-### 服务器模式
-
-| 模式 | 命令 | 工具数 | 说明 |
-|------|------|:------:|------|
-| **readonly** | `serve-mcp-readonly` | 11 | 只读查询 + 审计，安全长期连接 |
-| **curate** | `serve-mcp-curate` | 16 | 全部工具，包含 discover/read/review/export |
-| **admin** | `serve-mcp-admin` | 18 | 全部 + 元数据修复/去重，仅本地人工使用 |
+Use readonly by default for long-running agent sessions.
 
 ```bash
-# 推荐：只读模式（安全，默认）
+# Safe default: read-only queries, evidence matrices, bibliography, and audit tools.
 knowcran serve-mcp-readonly
 
-# 策展模式（需要审批）
+# Curate mode: discovery, reading, review, and export.
 knowcran serve-mcp-curate
 
-# 管理模式（仅本地）
+# Admin mode: local repair and dedupe workflows.
 knowcran serve-mcp-admin
-
-# 向后兼容（等同 curate）
-knowcran serve-mcp
-
-# 配置示例见 docs/mcp/
-# - docs/mcp/claude-code.mcp.json.example
-# - docs/mcp/claude-desktop.config.json.example
-# - docs/mcp/codex.config.toml.example
 ```
 
-**MCP 工具列表**（18 个）：
+Client templates are available under `docs/mcp/`:
 
-| 工具 | Profile | 说明 |
-|------|:-------:|------|
-| `knowcran_stats` | read | 数据库统计 |
-| `knowcran_search_papers` | read | 搜索论文 |
-| `knowcran_search_claims` | read | 搜索声明 |
-| `knowcran_get_topic_papers` | read | 获取主题论文 |
-| `knowcran_get_evidence_matrix` | read | 获取证据矩阵（含 citation_key_map） |
-| `knowcran_get_bibliography` | read | 获取 BibTeX/JSON 参考文献 |
-| `knowcran_get_topic_tree` | read | 主题层级树（别名、父子、兄弟） |
-| `knowcran_validate_citations` | read | 验证文本中的引用键 |
-| `knowcran_get_runs` | read | 列出最近的运行记录 |
-| `knowcran_get_run` | read | 查看单次运行详情 |
-| `knowcran_audit_answer` | read | 审计答案（多格式引用、overclaim 检测） |
-| `knowcran_discover` | write | 文献发现（重复查询返回已有结果） |
-| `knowcran_read_topic` | write | 声明提取 |
-| `knowcran_read_paper` | write | 单篇论文提取 |
-| `knowcran_review` | write | 综述生成 |
-| `knowcran_export_obsidian` | write | Obsidian 导出 |
-| `knowcran_repair_metadata` | admin | 修复论文元数据 |
-| `knowcran_dedupe_claims` | admin | 检查/合并重复声明 |
+- `docs/mcp/codex.config.toml.example`
+- `docs/mcp/claude-code.mcp.json.example`
+- `docs/mcp/claude-desktop.config.json.example`
 
----
+## Evidence Contract
 
-## 数据目录结构
+Mnemosyne treats every generated claim as provisional unless it can be traced to stored evidence. Agent-facing outputs should preserve:
 
-```
-data/
-  knowcran.sqlite          # SQLite 数据库
-  raw/semantic_scholar/    # API 响应缓存
-vault/
-  papers/                  # 论文笔记
-  claims/                  # 声明笔记
-  topics/                  # 主题索引
-  reviews/                 # 综述、证据矩阵、BibTeX
-```
+- `paper_id`
+- `claim_id`
+- `citation_key`
+- `claim_text`
+- `evidence_type`
+- `confidence`
+- `source_quote` or `evidence_status`
 
----
+Abstract-only evidence is explicitly marked. Review and answer generation should not present abstract-only or animal-model evidence as full clinical proof.
 
-## 测试
+## Testing
 
 ```bash
-pytest -v        # 全部 251 项测试
-pytest -v -k "topic"  # 主题相关测试
-pytest -v -k "mcp"    # MCP 相关测试
+pytest -v
+pytest --cov=knowcran --cov-report=term-missing
 ```
 
-**测试分类**：
+The CI workflow runs tests on Linux, macOS, and Windows for Python 3.12 and 3.13, then builds a source distribution and wheel.
 
-| 测试文件 | 覆盖内容 |
-|----------|----------|
-| `test_topic_resolution.py` | 主题精确匹配、子主题隔离、主题关系树、证据追溯、MCP schema |
-| `test_mcp_server.py` | MCP 工具注册、调用、分页、审计、安全 |
-| `test_review.py` / `test_review_v2.py` | 综述三段式格式、证据选择、LLM 回退 |
-| `test_storage.py` / `test_storage_v2.py` | 存储、声明幂等性、迁移 |
-| `test_extraction.py` | 确定性提取、LLM 提取、回退 |
-| `test_s2_client.py` | Semantic Scholar API、缓存、重试、速率限制 |
+## Limitations
 
----
+- Full-text PDF ingestion is not part of the 1.0.0 release.
+- Semantic Scholar metadata can be incomplete or rate-limited.
+- Deterministic extraction is conservative and may miss nuanced claims.
+- Optional LLM/agent providers must return schema-valid JSON before their output is stored.
+- Review output is evidence-controlled drafting support, not a substitute for expert literature review.
 
-## 版本历史
+## Release Documents
 
-| 版本 | 亮点 |
-|------|------|
-| v0.6.0 | 生产级 MCP：admin profile、18 个工具、limit=0 语义修正、多格式引用审计、证据溯源增强、S2 重试抖动 |
-| v0.5.0 | MCP 路径白名单、主题精确匹配、主题关系树、答案审计增强 |
-| v0.4.0 | MCP 服务器重构、uv.lock、mcp 依赖 |
-| v0.3.1 | 子进程运行器、超时优化、索引优化 |
-| v0.3.0 | 批量执行器、代理系统、注册表 |
-| v0.2.0 | 主题分类、综述改进 |
-| v0.1.0 | MVP：搜索、提取、Obsidian 导出 |
+- `CHANGELOG.md`
+- `ROADMAP.md`
+- `CONTRIBUTING.md`
+- `docs/release/1.0.0-checklist.md`
 
----
+## License
 
-## 许可
-
-Apache-2.0
+Apache-2.0. See `LICENSE`.

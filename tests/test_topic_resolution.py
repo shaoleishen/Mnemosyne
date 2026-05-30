@@ -1,4 +1,4 @@
-"""P4 Priority Tests: Topic resolution, subtopic isolation, evidence traceability."""
+"""Tests: Topic resolution, subtopic isolation, evidence traceability."""
 
 from __future__ import annotations
 
@@ -46,10 +46,6 @@ def db_with_topics(tmp_path):
     # Claims for ICH biomarker
     s.insert_claim(Claim(claim_id="c-bio-1", paper_id="p-bio-1", claim_text="GFAP levels correlate with ICH volume", evidence_type="result", confidence=0.7, topic="ICH biomarker"))
 
-    # Topic relations
-    s.add_topic_relation("ICH", "ICH surgery", "subtopic")
-    s.add_topic_relation("ICH", "ICH biomarker", "subtopic")
-
     s.close()
     return tmp_path
 
@@ -72,7 +68,6 @@ class TestTopicResolutionExact:
     def test_substring_does_not_resolve_to_parent(self, db_with_topics):
         """ICH surgery must NOT resolve to ICH via substring matching."""
         s = Storage(db_path=db_with_topics / "knowcran.sqlite")
-        # This was the old buggy behavior - must not happen
         assert s.resolve_topic("ICH surgery") != "ICH"
         assert s.resolve_topic("ICH surgery") == "ICH surgery"
         s.close()
@@ -100,14 +95,16 @@ class TestSubtopicIsolation:
         assert "c-ich-1" not in claim_ids
         s.close()
 
-    def test_read_topic_include_parent(self, db_with_topics):
-        """With include_parent=True, ICH surgery should also get ICH claims."""
+    def test_read_topic_different_topics_isolated(self, db_with_topics):
+        """Reading different topics should return different claims."""
         from knowcran.reading import read_topic
         s = Storage(db_path=db_with_topics / "knowcran.sqlite")
-        claims = read_topic("ICH surgery", limit=20, storage=s, include_parent=True)
-        claim_ids = {c.claim_id for c in claims}
-        # Should have both surgery and parent claims
-        assert "c-ich-1" in claim_ids or any("ich-1" in c.paper_id for c in claims)
+        surgery_claims = read_topic("ICH surgery", limit=20, storage=s)
+        bio_claims = read_topic("ICH biomarker", limit=20, storage=s)
+        surgery_ids = {c.claim_id for c in surgery_claims}
+        bio_ids = {c.claim_id for c in bio_claims}
+        # Surgery and biomarker claims should not overlap
+        assert surgery_ids.isdisjoint(bio_ids)
         s.close()
 
     def test_review_uses_same_effective_topic(self, db_with_topics):
@@ -120,30 +117,6 @@ class TestSubtopicIsolation:
         for row in output.evidence_matrix:
             # Surgery claims should be from surgery papers
             assert row.paper_id == "p-surg-1"
-        s.close()
-
-
-class TestTopicRelations:
-    """P0: topic_relations table works correctly."""
-
-    def test_add_and_get_subtopics(self, db_with_topics):
-        s = Storage(db_path=db_with_topics / "knowcran.sqlite")
-        subtopics = s.get_subtopics("ICH")
-        assert "ICH surgery" in subtopics
-        assert "ICH biomarker" in subtopics
-        s.close()
-
-    def test_get_parent_topics(self, db_with_topics):
-        s = Storage(db_path=db_with_topics / "knowcran.sqlite")
-        parents = s.get_parent_topics("ICH surgery")
-        assert "ICH" in parents
-        s.close()
-
-    def test_get_topic_family(self, db_with_topics):
-        s = Storage(db_path=db_with_topics / "knowcran.sqlite")
-        family = s.get_topic_family("ICH surgery")
-        assert family["parents"] == ["ICH"]
-        assert "ICH biomarker" in family["siblings"]
         s.close()
 
 
@@ -184,11 +157,11 @@ class TestFastMCPSchema:
         from knowcran.server.mcp import _create_readonly_server
         server = _create_readonly_server()
         tools = server._tool_manager.list_tools()
-        assert len(tools) == 11  # 10 read + 1 audit
+        assert len(tools) == 7  # 6 read + 1 audit
 
     def test_curate_server_creates_successfully(self):
         """Curate server should create without errors."""
         from knowcran.server.mcp import _create_curate_server
         server = _create_curate_server()
         tools = server._tool_manager.list_tools()
-        assert len(tools) == 16  # 10 read + 5 write + 1 audit
+        assert len(tools) == 12  # 6 read + 5 write + 1 audit

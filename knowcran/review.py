@@ -22,164 +22,74 @@ def _group_claims(claims: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]
     return groups
 
 
-# Evidence selection priority: result > method > limitation > abstract_summary > full_text_needed > open_question
-_EVIDENCE_PRIORITY = {
-    "result": 0,
-    "method": 1,
-    "limitation": 2,
-    "abstract_summary": 3,
-    "full_text_needed": 4,
-    "open_question": 5,
-}
-
-# Normalized open question categories
-_OPEN_QUESTION_CATEGORIES = {
-    "translational relevance": [
-        "translational relevance", "animal model", "in vivo", "in vitro",
-        "murine", "rodent", "human relevance",
-    ],
-    "long-term outcomes": [
-        "long-term outcomes", "long-term", "follow-up", "1-year", "chronic",
-    ],
-    "methods/population missing": [
-        "study population", "methodology", "sample size", "population",
-    ],
-    "full-text limitations needed": [
-        "full text review", "full text", "limitations needed",
-    ],
-}
-
-
-def _select_evidence(claims: list[dict[str, Any]], max_per_paper: int = 3, max_total: int = 0) -> list[dict[str, Any]]:
-    """Select evidence claims with priority ordering and per-paper limits.
-
-    Priority: result > method > limitation > abstract_summary > full_text_needed > open_question
-    Max 2-3 claims per paper to avoid single-paper dominance.
-    If max_total is 0 or less, automatically scales: min(len(claims), max(50, len(claims) // 2)).
-    """
-    if max_total <= 0:
-        max_total = min(len(claims), max(50, len(claims) // 2))
-    # Sort by priority then confidence
-    sorted_claims = sorted(
-        claims,
-        key=lambda c: (_EVIDENCE_PRIORITY.get(c.get("evidence_type", ""), 99), -(c.get("confidence") or 0)),
-    )
-
-    selected: list[dict[str, Any]] = []
-    per_paper_count: dict[str, int] = {}
-
-    for claim in sorted_claims:
-        pid = claim.get("paper_id", "")
-        if per_paper_count.get(pid, 0) >= max_per_paper:
-            continue
-        selected.append(claim)
-        per_paper_count[pid] = per_paper_count.get(pid, 0) + 1
-        if len(selected) >= max_total:
-            break
-
-    return selected
-
-
-def _normalize_open_questions(claims: list[dict[str, Any]]) -> list[str]:
-    """Normalize and deduplicate open questions into standard categories."""
-    open_qs = [c["claim_text"] for c in claims if c.get("evidence_type") == "open_question"]
-    if not open_qs:
-        return ["No open questions identified."]
-
-    matched_categories: dict[str, int] = {}
-    unmatched: list[str] = []
-
-    for q in open_qs:
-        q_lower = q.lower()
-        matched = False
-        for category, keywords in _OPEN_QUESTION_CATEGORIES.items():
-            if any(kw in q_lower for kw in keywords):
-                matched_categories[category] = matched_categories.get(category, 0) + 1
-                matched = True
-                break
-        if not matched:
-            unmatched.append(q)
-
-    result: list[str] = []
-    for category, count in sorted(matched_categories.items(), key=lambda x: -x[1]):
-        result.append(f"{category} (mentioned in {count} papers)")
-    # Add up to 2 unique unmatched questions
-    for q in unmatched[:2]:
-        if q not in result:
-            result.append(q)
-
-    return result or ["No open questions identified."]
-
-
 def _build_review_text(topic: str, papers: list[dict[str, Any]], claims: list[dict[str, Any]]) -> str:
-    """Build review text in three-section format: Evidence Digest, Thematic Synthesis, Gap Map."""
+    groups = _group_claims(claims)
     paper_map = {p["paper_id"]: p for p in papers}
     keys = {pid: citation_key(p) for pid, p in paper_map.items()}
 
     def cite(paper_id: str) -> str:
         return f"[@{keys.get(paper_id, paper_id)}]"
 
-    # Select evidence with priority and per-paper limits
-    selected = _select_evidence(claims)
-    groups = _group_claims(selected)
-
     text = f"# Literature Review: {topic}\n\n"
     text += f"Based on analysis of {len(papers)} papers and {len(claims)} claims from the KnowCran knowledge base.\n\n"
 
-    # Section 1: Evidence Digest
-    text += "## Evidence Digest\n\n"
-    for etype in ["result", "method", "limitation", "abstract_summary"]:
-        items = groups.get(etype, [])
-        if items:
-            text += f"### {etype.replace('_', ' ').title()}\n\n"
-            for item in items:
-                text += f"- {item['claim_text']} {cite(item['paper_id'])}\n"
-            text += "\n"
+    # Invariant: if we have claims, at least one section must have evidence
+    has_any_evidence = any(len(v) > 0 for v in groups.values())
+    if claims and not has_any_evidence:
+        text += "> **Warning**: Claims exist but could not be grouped by evidence type. This may indicate a schema mismatch.\n\n"
+
+    text += "## Background\n\n"
+    summaries = groups.get("abstract_summary", [])
+    if summaries:
+        for s in summaries[:5]:
+            text += f"- {s['claim_text']} {cite(s['paper_id'])}\n"
+    else:
+        text += "Needs evidence.\n"
+    text += "\n"
+
+    text += "## Main Evidence\n\n"
+    results = groups.get("result", [])
+    if results:
+        for r in results[:8]:
+            text += f"- {r['claim_text']} {cite(r['paper_id'])}\n"
+    else:
+        text += "Needs evidence.\n"
+    text += "\n"
+
+    text += "## Methods And Models\n\n"
+    methods = groups.get("method", [])
+    if methods:
+        for m in methods[:5]:
+            text += f"- {m['claim_text']} {cite(m['paper_id'])}\n"
+    else:
+        text += "Needs evidence.\n"
+    text += "\n"
+
+    text += "## Limitations\n\n"
+    limitations = groups.get("limitation", [])
+    if limitations:
+        for l in limitations[:5]:
+            text += f"- {l['claim_text']} {cite(l['paper_id'])}\n"
+    else:
+        text += "Needs evidence.\n"
+    text += "\n"
 
     full_text_needed = groups.get("full_text_needed", [])
     if full_text_needed:
         text += "### Full Text Review Needed\n\n"
-        for ft in full_text_needed[:3]:
+        for ft in full_text_needed[:5]:
             text += f"- {ft['claim_text']} {cite(ft['paper_id'])}\n"
         text += "\n"
 
-    # Section 2: Thematic Synthesis
-    text += "## Thematic Synthesis\n\n"
-    # Group results by theme (simple keyword clustering)
-    results = groups.get("result", [])
-    if results:
-        # Synthesize key findings
-        text += "Key findings across the evidence base:\n\n"
-        seen_themes: set[str] = set()
-        for r in results:
-            # Extract a simple theme from the claim text
-            words = set(r["claim_text"].lower().split())
-            theme_words = words & {"mortality", "survival", "outcome", "treatment", "surgery", "biomarker", "risk", "diagnosis"}
-            theme = ", ".join(sorted(theme_words)[:2]) if theme_words else "general"
-            if theme not in seen_themes:
-                seen_themes.add(theme)
-                text += f"- **{theme.title()}**: {r['claim_text']} {cite(r['paper_id'])}\n"
-        text += "\n"
+    text += "## Open Questions\n\n"
+    open_qs = groups.get("open_question", [])
+    if open_qs:
+        for q in open_qs[:5]:
+            text += f"- {q['claim_text']} {cite(q['paper_id'])}\n"
     else:
-        text += "Needs evidence.\n\n"
-
-    # Section 3: Gap Map
-    text += "## Gap Map\n\n"
-    text += "### Open Questions\n\n"
-    normalized_qs = _normalize_open_questions(claims)
-    for i, q in enumerate(normalized_qs, 1):
-        text += f"{i}. {q}\n"
+        text += "Needs evidence.\n"
     text += "\n"
 
-    # Limitations summary
-    limitations = groups.get("limitation", [])
-    if limitations:
-        text += "### Known Limitations\n\n"
-        for l in limitations[:3]:
-            text += f"- {l['claim_text']} {cite(l['paper_id'])}\n"
-        text += "\n"
-
-    # References
     text += "## References\n\n"
     for p in papers:
         doi = p.get("doi", "")
@@ -379,68 +289,30 @@ def _build_open_questions(claims: list[dict[str, Any]]) -> str:
 
 def review(
     topic: str,
-    max_papers: int = 0,
+    max_papers: int = 20,
     storage: Storage | None = None,
     vault_dir: Path = VAULT_DIR,
     llm_provider: Any | None = None,
     agent_provider: Any | None = None,
-    include_parent: bool = False,
 ) -> ReviewOutput:
     own = storage is None
     storage = storage or Storage()
     try:
-        # effective_topic: default is user input, only alias changes it
+        # Resolve topic aliases
         resolved_topic = storage.resolve_topic(topic)
-        effective_topic = resolved_topic
-
-        # Dynamically determine max_papers based on available data
-        if max_papers <= 0:
-            # Count available papers for this topic
-            if storage.has_topic_papers(effective_topic):
-                count_rows = storage.conn.execute(
-                    "SELECT COUNT(*) FROM topic_papers WHERE topic = ?", (effective_topic,)
-                ).fetchone()
-                available = count_rows[0] if count_rows else 0
-            elif storage.has_topic_papers(topic):
-                count_rows = storage.conn.execute(
-                    "SELECT COUNT(*) FROM topic_papers WHERE topic = ?", (topic,)
-                ).fetchone()
-                available = count_rows[0] if count_rows else 0
-            else:
-                available = 0
-            # Use all available papers, cap at 500 max
-            max_papers = min(available, 500) if available > 0 else 50
 
         # Use explicit topic membership if available, fall back to text search
-        if storage.has_topic_papers(effective_topic):
-            papers = storage.get_topic_papers(effective_topic, limit=max_papers)
+        if storage.has_topic_papers(resolved_topic):
+            papers = storage.get_topic_papers(resolved_topic, limit=max_papers)
         elif storage.has_topic_papers(topic):
             papers = storage.get_topic_papers(topic, limit=max_papers)
         else:
             papers = storage.get_papers_by_topic(topic, limit=max_papers)
-
-        # Only include parent papers if explicitly requested
-        if include_parent:
-            parent_topics = storage.get_parent_topics(topic)
-            for parent in parent_topics:
-                parent_papers = storage.get_topic_papers(parent, limit=max_papers // 2)
-                existing_ids = {p["paper_id"] for p in papers}
-                for pp in parent_papers:
-                    if pp["paper_id"] not in existing_ids:
-                        papers.append(pp)
-
         selected_paper_ids = {p["paper_id"] for p in papers}
-        # Get claims for the effective topic
         claims = [
-            c for c in storage.get_claims_by_topic(effective_topic)
+            c for c in storage.get_claims_by_topic(topic)
             if c["paper_id"] in selected_paper_ids
         ]
-        # Also get claims stored under the original topic if different
-        if effective_topic != topic:
-            claims.extend([
-                c for c in storage.get_claims_by_topic(topic)
-                if c["paper_id"] in selected_paper_ids and c["claim_id"] not in {x["claim_id"] for x in claims}
-            ])
         paper_ids = [p["paper_id"] for p in papers]
 
         # Try agent/LLM review synthesis

@@ -147,14 +147,6 @@ CREATE TABLE IF NOT EXISTS agent_runs (
     usage_json TEXT,
     created_at TEXT NOT NULL
 );
-
-CREATE TABLE IF NOT EXISTS topic_relations (
-    parent_topic TEXT NOT NULL,
-    child_topic TEXT NOT NULL,
-    relation_type TEXT NOT NULL DEFAULT 'subtopic',
-    created_at TEXT NOT NULL,
-    PRIMARY KEY(parent_topic, child_topic)
-);
 """
 
 
@@ -227,15 +219,6 @@ def _migrate(conn: sqlite3.Connection) -> None:
 
     # Idempotency index for claims
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_claims_idempotency ON claims(paper_id, topic, evidence_type, claim_hash)")
-
-    # Topic relations table
-    cursor.execute("""CREATE TABLE IF NOT EXISTS topic_relations (
-        parent_topic TEXT NOT NULL,
-        child_topic TEXT NOT NULL,
-        relation_type TEXT NOT NULL DEFAULT 'subtopic',
-        created_at TEXT NOT NULL,
-        PRIMARY KEY(parent_topic, child_topic)
-    )""")
 
     conn.commit()
 
@@ -321,16 +304,10 @@ class Storage:
         return dict(row) if row else None
 
     def get_papers_by_topic(self, topic: str, limit: int = 20) -> list[dict[str, Any]]:
-        if limit <= 0:
-            rows = self.conn.execute(
-                "SELECT * FROM papers WHERE title LIKE ? OR abstract LIKE ? ORDER BY relevance_score DESC",
-                (f"%{topic}%", f"%{topic}%"),
-            ).fetchall()
-        else:
-            rows = self.conn.execute(
-                "SELECT * FROM papers WHERE title LIKE ? OR abstract LIKE ? ORDER BY relevance_score DESC LIMIT ?",
-                (f"%{topic}%", f"%{topic}%", limit),
-            ).fetchall()
+        rows = self.conn.execute(
+            "SELECT * FROM papers WHERE title LIKE ? OR abstract LIKE ? ORDER BY relevance_score DESC LIMIT ?",
+            (f"%{topic}%", f"%{topic}%", limit),
+        ).fetchall()
         return [dict(r) for r in rows]
 
     def insert_link(self, link: PaperLink) -> None:
@@ -355,19 +332,19 @@ class Storage:
 
     def insert_claim(self, claim: Claim) -> None:
         now = datetime.now(timezone.utc).isoformat()
-        claim_hash = compute_topic_claim_key(claim)
-        source_text_hash = hashlib.sha256(claim.claim_text.encode()).hexdigest()[:16]
+        claim_hash = compute_claim_hash(claim)
+        source_text_hash = hashlib.sha256((claim.source_quote or claim.claim_text).encode()).hexdigest()[:16]
         self.conn.execute(
             """INSERT OR REPLACE INTO claims (claim_id, paper_id, claim_text, evidence_type,
                 confidence, source_location, topic, created_at,
-                claim_hash, source_text_hash, extraction_method, citation_key,
-                source_span_json, is_placeholder, evidence_status, source_quote)
+                claim_hash, source_text_hash, source_span_json, extraction_method,
+                is_placeholder, citation_key, evidence_status, source_quote)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (claim.claim_id, claim.paper_id, claim.claim_text, claim.evidence_type,
              claim.confidence, claim.source_location, claim.topic, claim.created_at or now,
-             claim_hash, source_text_hash, "deterministic", claim.citation_key,
-             claim.source_span_json, 1 if claim.evidence_type == "full_text_needed" else 0,
-             claim.evidence_status or "abstract_only", claim.source_quote),
+             claim_hash, source_text_hash, claim.source_span_json, "deterministic",
+             1 if claim.evidence_type == "full_text_needed" else 0,
+             claim.citation_key, claim.evidence_status, claim.source_quote),
         )
         self.conn.commit()
 
@@ -376,20 +353,20 @@ class Storage:
         now = datetime.now(timezone.utc).isoformat()
         rows = []
         for c in claims:
-            claim_hash = compute_topic_claim_key(c)
-            source_text_hash = hashlib.sha256(c.claim_text.encode()).hexdigest()[:16]
+            claim_hash = compute_claim_hash(c)
+            source_text_hash = hashlib.sha256((c.source_quote or c.claim_text).encode()).hexdigest()[:16]
             rows.append((
                 c.claim_id, c.paper_id, c.claim_text, c.evidence_type,
                 c.confidence, c.source_location, c.topic, c.created_at or now,
-                claim_hash, source_text_hash, "deterministic", c.citation_key,
-                c.source_span_json, 1 if c.evidence_type == "full_text_needed" else 0,
-                c.evidence_status or "abstract_only", c.source_quote
+                claim_hash, source_text_hash, c.source_span_json, "deterministic",
+                1 if c.evidence_type == "full_text_needed" else 0,
+                c.citation_key, c.evidence_status, c.source_quote,
             ))
         self.conn.executemany(
             """INSERT OR REPLACE INTO claims (claim_id, paper_id, claim_text, evidence_type,
                 confidence, source_location, topic, created_at,
-                claim_hash, source_text_hash, extraction_method, citation_key,
-                source_span_json, is_placeholder, evidence_status, source_quote)
+                claim_hash, source_text_hash, source_span_json, extraction_method,
+                is_placeholder, citation_key, evidence_status, source_quote)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             rows,
         )
@@ -398,33 +375,19 @@ class Storage:
     def upsert_claim_idempotent(self, claim: Claim, extraction_method: str = "deterministic",
                                  citation_key: str | None = None,
                                  source_span_json: str | None = None,
-                                 is_placeholder: bool = False,
-                                 evidence_status: str | None = None,
-                                 source_quote: str | None = None) -> bool:
+                                 is_placeholder: bool = False) -> bool:
         """Insert a claim only if it doesn't already exist (idempotent).
 
         Returns True if inserted, False if already exists.
-        Saves all metadata: citation_key, source_quote, source_span_json,
-        evidence_status, source_text_hash.
         """
         now = datetime.now(timezone.utc).isoformat()
-        claim_hash = compute_topic_claim_key(claim)
-        content_hash = compute_content_hash(claim)
-        # Compute source_text_hash from claim text for traceability
-        source_text_hash = hashlib.sha256(claim.claim_text.encode()).hexdigest()[:16]
-
+        claim_hash = compute_claim_hash(claim)
         existing = self.conn.execute(
             "SELECT claim_id FROM claims WHERE claim_hash = ? AND paper_id = ? AND topic = ?",
             (claim_hash, claim.paper_id, claim.topic),
         ).fetchone()
         if existing:
             return False
-
-        # Use claim's own fields with fallbacks to parameters
-        ck = claim.citation_key or citation_key
-        es = evidence_status or claim.evidence_status or "abstract_only"
-        sq = source_quote or claim.source_quote
-        ssj = claim.source_span_json or source_span_json
 
         self.conn.execute(
             """INSERT INTO claims (claim_id, paper_id, claim_text, evidence_type,
@@ -434,8 +397,10 @@ class Storage:
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (claim.claim_id, claim.paper_id, claim.claim_text, claim.evidence_type,
              claim.confidence, claim.source_location, claim.topic, claim.created_at or now,
-             claim_hash, source_text_hash, extraction_method, ck,
-             ssj, 1 if is_placeholder else 0, es, sq),
+             claim_hash, hashlib.sha256((claim.source_quote or claim.claim_text).encode()).hexdigest()[:16],
+             extraction_method, citation_key or claim.citation_key,
+             source_span_json or claim.source_span_json, 1 if is_placeholder else 0,
+             claim.evidence_status, claim.source_quote),
         )
         self.conn.commit()
         return True
@@ -524,23 +489,14 @@ class Storage:
         self.conn.commit()
 
     def get_topic_papers(self, topic: str, limit: int = 100) -> list[dict[str, Any]]:
-        if limit <= 0:
-            rows = self.conn.execute(
-                """SELECT p.* FROM papers p
-                INNER JOIN topic_papers tp ON p.paper_id = tp.paper_id
-                WHERE tp.topic = ?
-                ORDER BY COALESCE(tp.llm_relevance_score, tp.relevance_score) DESC, p.relevance_score DESC""",
-                (topic,),
-            ).fetchall()
-        else:
-            rows = self.conn.execute(
-                """SELECT p.* FROM papers p
-                INNER JOIN topic_papers tp ON p.paper_id = tp.paper_id
-                WHERE tp.topic = ?
-                ORDER BY COALESCE(tp.llm_relevance_score, tp.relevance_score) DESC, p.relevance_score DESC
-                LIMIT ?""",
-                (topic, limit),
-            ).fetchall()
+        rows = self.conn.execute(
+            """SELECT p.* FROM papers p
+            INNER JOIN topic_papers tp ON p.paper_id = tp.paper_id
+            WHERE tp.topic = ?
+            ORDER BY COALESCE(tp.llm_relevance_score, tp.relevance_score) DESC, p.relevance_score DESC
+            LIMIT ?""",
+            (topic, limit),
+        ).fetchall()
         return [dict(r) for r in rows]
 
     def has_topic_papers(self, topic: str) -> bool:
@@ -552,11 +508,8 @@ class Storage:
     def resolve_topic(self, topic: str) -> str:
         """Resolve a topic alias to its canonical topic.
 
-        Only two resolution paths:
-        1. Explicit alias lookup in topic_aliases table
-        2. Exact match (returns topic unchanged)
-
-        No substring matching - "ICH surgery" will NOT resolve to "ICH".
+        If the topic has no alias, returns the topic itself.
+        Also checks if the topic is a substring of any existing topic_papers entry.
         """
         # Check direct alias
         row = self.conn.execute(
@@ -565,7 +518,23 @@ class Storage:
         if row:
             return row[0]
 
-        # Exact match only - return as-is
+        # Check if topic is a canonical topic
+        row = self.conn.execute(
+            "SELECT COUNT(*) FROM topic_papers WHERE topic = ?", (topic,)
+        ).fetchone()
+        if row[0] > 0:
+            return topic
+
+        # Try substring matching: find topics that contain this topic or vice versa
+        rows = self.conn.execute(
+            "SELECT DISTINCT topic FROM topic_papers WHERE topic LIKE ? OR ? LIKE '%' || topic || '%'",
+            (f"%{topic}%", topic),
+        ).fetchall()
+        if rows:
+            # Return the shortest matching topic (most specific)
+            topics = [r[0] for r in rows]
+            return min(topics, key=len)
+
         return topic
 
     def add_topic_alias(self, alias: str, canonical_topic: str) -> None:
@@ -592,50 +561,6 @@ class Storage:
             (canonical_topic,),
         ).fetchall()
         return [r[0] for r in rows]
-
-    # --- Topic Relations (parent/child subtopics) ---
-
-    def add_topic_relation(self, parent_topic: str, child_topic: str, relation_type: str = "subtopic") -> None:
-        """Add a parent-child topic relation. e.g., ICH -> ICH surgery."""
-        now = datetime.now(timezone.utc).isoformat()
-        self.conn.execute(
-            """INSERT OR IGNORE INTO topic_relations (parent_topic, child_topic, relation_type, created_at)
-            VALUES (?, ?, ?, ?)""",
-            (parent_topic, child_topic, relation_type, now),
-        )
-        self.conn.commit()
-
-    def get_subtopics(self, parent_topic: str) -> list[str]:
-        """Get all direct child topics of a parent."""
-        rows = self.conn.execute(
-            "SELECT child_topic FROM topic_relations WHERE parent_topic = ?",
-            (parent_topic,),
-        ).fetchall()
-        return [r[0] for r in rows]
-
-    def get_parent_topics(self, child_topic: str) -> list[str]:
-        """Get all direct parent topics of a child."""
-        rows = self.conn.execute(
-            "SELECT parent_topic FROM topic_relations WHERE child_topic = ?",
-            (child_topic,),
-        ).fetchall()
-        return [r[0] for r in rows]
-
-    def get_topic_family(self, topic: str) -> dict[str, Any]:
-        """Get the full topic family: parents, siblings, children."""
-        parents = self.get_parent_topics(topic)
-        children = self.get_subtopics(topic)
-        siblings: list[str] = []
-        for parent in parents:
-            for sib in self.get_subtopics(parent):
-                if sib != topic and sib not in siblings:
-                    siblings.append(sib)
-        return {
-            "topic": topic,
-            "parents": parents,
-            "children": children,
-            "siblings": siblings,
-        }
 
     # --- LLM Runs ---
 
@@ -847,26 +772,8 @@ class Storage:
         return coverage
 
 
-def compute_content_hash(claim: Claim) -> str:
-    """Compute content hash WITHOUT topic - identifies the same claim in the same paper.
-
-    This answers: "Is this the same finding regardless of which topic it's filed under?"
-    """
-    normalized = " ".join(claim.claim_text.lower().split())
-    raw = f"{claim.paper_id}:{claim.evidence_type}:{normalized}:{claim.source_location}"
-    return hashlib.sha256(raw.encode()).hexdigest()[:16]
-
-
-def compute_topic_claim_key(claim: Claim) -> str:
-    """Compute topic-scoped claim key - identifies a claim within a specific topic.
-
-    This answers: "Is this claim already filed under this topic?"
-    """
+def compute_claim_hash(claim: Claim) -> str:
+    """Compute a deterministic hash for a claim based on its content."""
     normalized = " ".join(claim.claim_text.lower().split())
     raw = f"{claim.paper_id}:{claim.topic or ''}:{claim.evidence_type}:{normalized}:{claim.source_location}"
     return hashlib.sha256(raw.encode()).hexdigest()[:16]
-
-
-def compute_claim_hash(claim: Claim) -> str:
-    """Backward-compatible hash. Uses topic_claim_key for idempotency checks."""
-    return compute_topic_claim_key(claim)

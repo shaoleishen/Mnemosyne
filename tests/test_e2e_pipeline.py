@@ -60,6 +60,7 @@ def test_e2e_rag_pipeline(mock_download_pdf, mock_httpx_post, mock_httpx_get, mo
     monkeypatch.setenv("KNOWCRAN_DATA_DIR", str(data_dir))
     monkeypatch.setenv("KNOWCRAN_VAULT_DIR", str(vault_dir))
     monkeypatch.setenv("OPENAI_API_KEY", "mock-openai-key")
+    monkeypatch.setenv("MNEMOSYNE_EMBEDDING_PROVIDER", "openai")
 
     # Mock responsive MinerU API check for auto-parser
     mock_get_response = MagicMock(spec=httpx.Response)

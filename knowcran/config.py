@@ -79,6 +79,8 @@ class Settings:
     mineru_backend: str = field(default_factory=lambda: os.getenv("MNEMOSYNE_MINERU_BACKEND", "docker"))
     mineru_gpu: bool = field(default_factory=lambda: os.getenv("MNEMOSYNE_MINERU_GPU", "false").lower() == "true")
     mineru_workers: int = field(default_factory=lambda: int(os.getenv("MNEMOSYNE_MINERU_WORKERS", "1")))
+    mineru_models_dir: Path = field(default_factory=lambda: Path(os.getenv("MNEMOSYNE_MINERU_MODELS_DIR", "data/models/mineru")))
+    mineru_config_file: Path = field(default_factory=lambda: Path(os.getenv("MNEMOSYNE_MINERU_CONFIG_FILE", "data/mineru/magic-pdf.json")))
     mineru_return_md: bool = field(default_factory=lambda: os.getenv("MINERU_RETURN_MD", "true").lower() == "true")
     mineru_return_content_list: bool = field(default_factory=lambda: os.getenv("MINERU_RETURN_CONTENT_LIST", "true").lower() == "true")
     openai_api_key: str = field(default_factory=lambda: os.getenv("OPENAI_API_key", os.getenv("OPENAI_API_KEY", "")))
@@ -90,6 +92,19 @@ class Settings:
     local_embedding_model: str = field(default_factory=lambda: os.getenv("MNEMOSYNE_LOCAL_EMBEDDING_MODEL", "BAAI/bge-m3"))
     local_embedding_device: str = field(default_factory=lambda: os.getenv("MNEMOSYNE_LOCAL_EMBEDDING_DEVICE", "cpu"))
     local_embedding_batch_size: int = field(default_factory=lambda: int(os.getenv("MNEMOSYNE_LOCAL_EMBEDDING_BATCH_SIZE", "16")))
+
+    def __post_init__(self):
+        self.data_dir = Path(self.data_dir)
+        self.vault_dir = Path(self.vault_dir)
+
+        if not os.getenv("MNEMOSYNE_PDF_DIR") and self.pdf_dir == Path("data/pdfs"):
+            self.pdf_dir = self.data_dir / "pdfs"
+            
+        if not os.getenv("MNEMOSYNE_MINERU_MODELS_DIR") and self.mineru_models_dir == Path("data/models/mineru"):
+            self.mineru_models_dir = self.data_dir / "models" / "mineru"
+            
+        if not os.getenv("MNEMOSYNE_MINERU_CONFIG_FILE") and self.mineru_config_file == Path("data/mineru/magic-pdf.json"):
+            self.mineru_config_file = self.data_dir / "mineru" / "magic-pdf.json"
 
     @property
     def raw_dir(self) -> Path:

@@ -38,13 +38,14 @@ def startup_event():
     global embedder
     model_name = os.getenv("MNEMOSYNE_LOCAL_EMBEDDING_MODEL", "BAAI/bge-m3")
     device = os.getenv("MNEMOSYNE_LOCAL_EMBEDDING_DEVICE", "cpu")
+    batch_size = int(os.getenv("MNEMOSYNE_LOCAL_EMBEDDING_BATCH_SIZE", "16"))
     
-    logger.info(f"Starting embedding server with model={model_name} on device={device}")
+    logger.info(f"Starting embedding server with model={model_name} on device={device} batch_size={batch_size}")
     
     # Defer import to startup time to avoid failing module load when packages are missing
     from knowcran.services.embedder import LocalEmbedder
     try:
-        embedder = LocalEmbedder(model_name, device=device)
+        embedder = LocalEmbedder(model_name, device=device, batch_size=batch_size)
         logger.info("Local embedder successfully initialized.")
     except Exception as e:
         logger.error(f"Failed to initialize local embedder: {e}", exc_info=True)

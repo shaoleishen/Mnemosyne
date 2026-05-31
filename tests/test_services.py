@@ -22,14 +22,17 @@ def test_is_port_in_use():
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     s.bind(("127.0.0.1", 0))
     port = s.getsockname()[1]
+    s.close()
     
     # It should not be in use
     assert not is_port_in_use(port)
     
     # Now keep it open and check again
-    s.listen(1)
+    s2 = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s2.bind(("127.0.0.1", port))
+    s2.listen(1)
     assert is_port_in_use(port)
-    s.close()
+    s2.close()
 
 @patch("httpx.get")
 def test_probe_health(mock_get):
@@ -52,12 +55,20 @@ def test_start_mineru_docker(mock_in_use, mock_probe, mock_run, tmp_path):
         pdf_parser="mineru",
         mineru_mode="managed",
         mineru_backend="docker",
-        mineru_api_url="http://127.0.0.1:8000"
+        mineru_api_url="http://127.0.0.1:8000",
+        embedding_provider="none",  # Avoid starting embedding server in this test
     )
     
     mock_in_use.return_value = False
     # Mock probe: false initially, then true on second call
     mock_probe.side_effect = [False, True]
+    
+    # Configure mock_run for docker images check and docker compose up
+    mock_img_check = MagicMock()
+    mock_img_check.stdout = "mineru:latest"
+    mock_compose_up = MagicMock()
+    mock_compose_up.stdout = "success"
+    mock_run.side_effect = [mock_img_check, mock_compose_up]
     
     # We mock shutil.which to say docker exists
     with patch("shutil.which", return_value="/usr/bin/docker"):
@@ -71,8 +82,8 @@ def test_start_mineru_docker(mock_in_use, mock_probe, mock_run, tmp_path):
     assert "container_name: mineru-api" in content
 
     # Check subprocess command
-    mock_run.assert_called_once()
-    args = mock_run.call_args[0][0]
+    assert mock_run.call_count == 2
+    args = mock_run.call_args_list[1][0][0]
     assert args == ["docker", "compose", "-f", str(compose_file), "up", "-d"]
 
 @patch("subprocess.Popen")
@@ -83,7 +94,8 @@ def test_start_embedding_managed(mock_in_use, mock_probe, mock_popen, tmp_path):
         data_dir=tmp_path,
         embedding_provider="local",
         local_embedding_mode="managed",
-        local_embedding_url="http://127.0.0.1:8010/v1"
+        local_embedding_url="http://127.0.0.1:8010/v1",
+        mineru_mode="off",  # Avoid starting MinerU server in this test
     )
     
     mock_in_use.return_value = False

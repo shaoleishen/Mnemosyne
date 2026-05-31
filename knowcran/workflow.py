@@ -221,6 +221,20 @@ def run_topic_workflow(
     except Exception as e:
         logger.error(f"Failed to ensure local services: {e}")
         result["steps"]["services"] = {"error": str(e)}
+        
+        # Enforce strict fail-fast policy for production configurations
+        is_managed_local_emb = settings.embedding_provider == "local" and settings.local_embedding_mode == "managed"
+        is_managed_strict_mineru = settings.pdf_parser == "mineru" and settings.mineru_mode == "managed"
+        
+        if is_managed_local_emb or is_managed_strict_mineru:
+            logger.critical(f"Managed local services failed to start and are strictly required by configuration. Aborting workflow: {e}")
+            result["status"] = "failed"
+            result["error"] = f"Strict managed services startup failed: {e}"
+            return result
+        else:
+            logger.warning("Continuing pipeline run in degraded mode (Failing back to PyMuPDF parser and/or FTS5 search).")
+            if settings.pdf_parser == "auto":
+                settings.pdf_parser = "pymupdf"
 
     try:
         # Step 1: Get papers (discover if needed)

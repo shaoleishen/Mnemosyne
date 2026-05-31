@@ -3,8 +3,9 @@ import os
 import subprocess
 import shutil
 import urllib.parse
+import json
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Any
 
 logger = logging.getLogger(__name__)
 
@@ -18,7 +19,10 @@ services:
     ports:
       - "{port}:{port}"
     environment:
-      - MINERU_MODEL_SOURCE=local
+      - MINERU_MODEL_SOURCE={model_source}
+    volumes:
+      - "{config_file}:/root/magic-pdf.json"
+      - "{models_dir}:/root/models"
     entrypoint: mineru-api
     command: --host 0.0.0.0 --port {port}
 {gpu_config}
@@ -34,13 +38,18 @@ GPU_CONFIG_TEMPLATE = """    deploy:
 """
 
 class MinerUManager:
-    def __init__(self, data_dir: Path, api_url: str, gpu: bool = False, workers: int = 1):
-        self.data_dir = data_dir
-        self.runtime_dir = data_dir / "runtime" / "mineru"
+    def __init__(self, settings: Any, api_url: str, gpu: bool = False, workers: int = 1):
+        self.settings = settings
+        self.data_dir = Path(settings.data_dir)
+        self.runtime_dir = self.data_dir / "runtime" / "mineru"
         self.api_url = api_url
         self.gpu = gpu
         self.workers = workers
         self.process: Optional[subprocess.Popen] = None
+
+        # Resolve mount paths from settings
+        self.models_dir = Path(getattr(settings, "mineru_models_dir", self.data_dir / "models" / "mineru"))
+        self.config_file = Path(getattr(settings, "mineru_config_file", self.data_dir / "mineru" / "magic-pdf.json"))
 
         # Parse host and port from api_url
         parsed = urllib.parse.urlparse(self.api_url)
@@ -52,8 +61,39 @@ class MinerUManager:
 
     def write_compose_file(self):
         self.runtime_dir.mkdir(parents=True, exist_ok=True)
+        
+        # 1. Ensure magic-pdf.json config file exists on host
+        if not self.config_file.exists():
+            self.config_file.parent.mkdir(parents=True, exist_ok=True)
+            default_config = {
+                "models-dir": "/root/models",
+                "device-mode": "cuda" if self.gpu else "cpu"
+            }
+            try:
+                self.config_file.write_text(json.dumps(default_config, indent=2), encoding="utf-8")
+                logger.info(f"Generated default magic-pdf.json on host at: {self.config_file}")
+            except Exception as e:
+                logger.error(f"Failed to generate magic-pdf.json configuration: {e}")
+                
+        # 2. Ensure models directory exists on host
+        self.models_dir.mkdir(parents=True, exist_ok=True)
+
+        # 3. Format compose template
         gpu_config = GPU_CONFIG_TEMPLATE if self.gpu else ""
-        content = COMPOSE_TEMPLATE.format(port=self.port, gpu_config=gpu_config)
+        model_source = os.getenv("MINERU_MODEL_SOURCE", "local")
+        
+        # Docker Compose requires absolute paths or relative to compose file
+        # Convert path to absolute or relative to compose directory
+        abs_config = str(self.config_file.resolve().as_posix())
+        abs_models = str(self.models_dir.resolve().as_posix())
+
+        content = COMPOSE_TEMPLATE.format(
+            port=self.port,
+            model_source=model_source,
+            config_file=abs_config,
+            models_dir=abs_models,
+            gpu_config=gpu_config
+        )
         compose_path = self.get_compose_file_path()
         compose_path.write_text(content, encoding="utf-8")
         logger.info(f"Wrote MinerU compose file to {compose_path}")
@@ -65,6 +105,28 @@ class MinerUManager:
         if not self.is_docker_available():
             raise RuntimeError("Docker command not found. Please install Docker or set MNEMOSYNE_MINERU_BACKEND=subprocess.")
         
+        # Check if docker daemon is running and if the image exists locally
+        try:
+            img_check = subprocess.run(
+                ["docker", "images", "--format", "{{.Repository}}:{{.Tag}}"],
+                capture_output=True, text=True, check=True
+            )
+            if "mineru:latest" not in img_check.stdout:
+                raise RuntimeError(
+                    "MinerU Docker image 'mineru:latest' was not found locally.\n"
+                    "Since OpenDataLab does not host a pre-built image on Docker Hub, "
+                    "you must build it locally first:\n\n"
+                    "  wget https://gcore.jsdelivr.net/gh/opendatalab/MinerU@master/docker/global/Dockerfile\n"
+                    "  docker build -t mineru:latest -f Dockerfile .\n"
+                )
+        except subprocess.CalledProcessError as e:
+            err_msg = (e.stderr or "").lower()
+            if "daemon" in err_msg or "connect" in err_msg or "context" in err_msg:
+                raise RuntimeError("Docker daemon is not running. Please start the Docker service before launching managed containers.") from e
+            logger.warning(f"Failed to check local Docker images: {e.stderr or e}")
+        except Exception as e:
+            logger.warning(f"Failed to check local Docker images: {e}")
+
         self.write_compose_file()
         compose_file = self.get_compose_file_path()
         

@@ -111,6 +111,24 @@ pip install -e ".[local]"
 
 If you plan to utilize CUDA GPU acceleration, ensure `torch` with CUDA is installed (e.g., via `pip install torch --index-url https://download.pytorch.org/whl/cu124` for CUDA 12.4).
 
+### Docker Image for MinerU
+
+Because MinerU does not publish a pre-built image to Docker Hub, you must build the `mineru:latest` image locally before using the managed Docker backend:
+```bash
+# Download the global Dockerfile from the official repository
+wget https://gcore.jsdelivr.net/gh/opendatalab/MinerU@master/docker/global/Dockerfile
+
+# Build the local Docker image
+docker build -t mineru:latest -f Dockerfile .
+```
+
+### Local Embedding Model Cache
+
+When using `MNEMOSYNE_EMBEDDING_PROVIDER=local`, the server will dynamically download `BAAI/bge-m3` on its first run and cache it. To download it ahead of time for offline execution, run:
+```bash
+python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('BAAI/bge-m3')"
+```
+
 ### Managing Services
 
 Background services are automatically started on pipeline runs (e.g., `knowcran run-topic`), but they can also be controlled manually via the CLI:
@@ -203,7 +221,7 @@ The CI workflow runs tests on Linux, macOS, and Windows for Python 3.12 and 3.13
 
 ## Limitations
 
-- Full-text PDF ingestion is not part of the 1.0.0 release.
+- Full-text PDF ingestion is optional and locally managed, requiring external or managed background services (such as MinerU and local embedding server) to be configured.
 - Semantic Scholar metadata can be incomplete or rate-limited.
 - Deterministic extraction is conservative and may miss nuanced claims.
 - Optional LLM/agent providers must return schema-valid JSON before their output is stored.

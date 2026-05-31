@@ -256,7 +256,7 @@ def start_services(settings: Settings, gpu: bool = False):
                 )
                 
             manager = MinerUManager(
-                data_dir=settings.data_dir,
+                settings=settings,
                 api_url=mineru_url,
                 gpu=settings.mineru_gpu,
                 workers=settings.mineru_workers
@@ -325,14 +325,14 @@ def stop_services(settings: Settings):
         backend = mineru_info.get("backend", settings.mineru_backend)
         if backend == "docker":
             manager = MinerUManager(
-                data_dir=settings.data_dir,
+                settings=settings,
                 api_url=mineru_info.get("url", settings.mineru_api_url),
                 gpu=settings.mineru_gpu
             )
             manager.stop_docker()
         elif backend == "subprocess" and mineru_info.get("pid"):
             manager = MinerUManager(
-                data_dir=settings.data_dir,
+                settings=settings,
                 api_url=mineru_info.get("url", settings.mineru_api_url),
                 gpu=settings.mineru_gpu
             )

@@ -47,30 +47,40 @@ class EmbeddingProvider:
         if not self.api_key:
             raise ValueError("OpenAI API key is missing. Cannot generate embeddings.")
 
-        headers = {
-            "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json",
-        }
-        payload = {
-            "input": cleaned_texts,
-            "model": self.model,
-        }
-        
-        logger.info(f"Generating embeddings for {len(texts)} chunks using {self.model} via {self.provider}")
-        response = httpx.post(
-            f"{self.api_base}/embeddings",
-            headers=headers,
-            json=payload,
-            timeout=60.0
-        )
+        # Determine batch size: use local_embedding_batch_size for local, and a safe default (e.g. 64) for others
+        batch_size = 64
+        if self.provider == "local":
+            batch_size = getattr(self.settings, "local_embedding_batch_size", 16)
 
-        if response.status_code != 200:
-            raise ValueError(f"Embedding API error {response.status_code}: {response.text}")
+        all_embeddings = []
+        for i in range(0, len(cleaned_texts), batch_size):
+            batch = cleaned_texts[i:i + batch_size]
+            headers = {
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json",
+            }
+            payload = {
+                "input": batch,
+                "model": self.model,
+            }
+            
+            logger.info(f"Generating embeddings for batch of {len(batch)} chunks (total {len(texts)}) using {self.model} via {self.provider}")
+            response = httpx.post(
+                f"{self.api_base}/embeddings",
+                headers=headers,
+                json=payload,
+                timeout=60.0
+            )
 
-        resp_json = response.json()
-        data = resp_json.get("data", [])
-        # Sort by index to maintain original order
-        data_sorted = sorted(data, key=lambda x: x.get("index", 0))
-        
-        embeddings = [item["embedding"] for item in data_sorted]
-        return embeddings
+            if response.status_code != 200:
+                raise ValueError(f"Embedding API error {response.status_code}: {response.text}")
+
+            resp_json = response.json()
+            data = resp_json.get("data", [])
+            # Sort by index to maintain original order
+            data_sorted = sorted(data, key=lambda x: x.get("index", 0))
+            
+            embeddings = [item["embedding"] for item in data_sorted]
+            all_embeddings.extend(embeddings)
+
+        return all_embeddings

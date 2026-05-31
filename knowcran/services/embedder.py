@@ -4,9 +4,10 @@ from typing import List
 logger = logging.getLogger(__name__)
 
 class LocalEmbedder:
-    def __init__(self, model_name: str, device: str = "cpu"):
+    def __init__(self, model_name: str, device: str = "cpu", batch_size: int = 16):
         self.model_name = model_name
         self.device = device
+        self.batch_size = batch_size
         self.model = None
         self.backend = None
         self._init_model()
@@ -14,7 +15,7 @@ class LocalEmbedder:
     def _init_model(self):
         try:
             from sentence_transformers import SentenceTransformer
-            logger.info(f"Initializing SentenceTransformer model '{self.model_name}' on '{self.device}'")
+            logger.info(f"Initializing SentenceTransformer model '{self.model_name}' on '{self.device}' with batch_size={self.batch_size}")
             self.model = SentenceTransformer(self.model_name, device=self.device)
             self.backend = "sentence-transformers"
         except ImportError:
@@ -35,13 +36,13 @@ class LocalEmbedder:
             return []
 
         if self.backend == "sentence-transformers":
-            embeddings = self.model.encode(texts)
+            embeddings = self.model.encode(texts, batch_size=self.batch_size)
             if hasattr(embeddings, "tolist"):
                 return embeddings.tolist()
             return [list(e) for e in embeddings]
         elif self.backend == "fastembed":
             # fastembed's embed() returns a generator
-            embeddings = list(self.model.embed(texts))
+            embeddings = list(self.model.embed(texts, batch_size=self.batch_size))
             return [list(e) for e in embeddings]
         else:
             raise RuntimeError("Embedder is not initialized correctly.")

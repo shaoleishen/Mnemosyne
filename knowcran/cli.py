@@ -647,6 +647,19 @@ def doctor_cmd(
                     console.print("  Docker NVIDIA Runtime: [green]Available[/green] (Containers have GPU access)")
                 else:
                     console.print("  Docker NVIDIA Runtime: [red]Failed[/red] (NVIDIA Container Toolkit might not be configured)")
+                
+                # Check MinerU local docker image existence
+                try:
+                    img_check = subprocess.run(["docker", "images", "--format", "{{.Repository}}:{{.Tag}}"], capture_output=True, text=True, check=True)
+                    if "mineru:latest" in img_check.stdout:
+                        console.print("  MinerU Docker Image (mineru:latest): [green]Found[/green]")
+                    else:
+                        console.print("  MinerU Docker Image (mineru:latest): [yellow]NOT Found[/yellow]")
+                        console.print("    To run MinerU via managed Docker, please build the image:")
+                        console.print("    wget https://gcore.jsdelivr.net/gh/opendatalab/MinerU@master/docker/global/Dockerfile")
+                        console.print("    docker build -t mineru:latest -f Dockerfile .")
+                except Exception as img_err:
+                    console.print(f"  MinerU Docker Image Check: [red]Error[/red] ({img_err})")
             else:
                 console.print("  Docker NVIDIA Runtime: [yellow]Docker is not installed[/yellow]")
         except Exception as e:

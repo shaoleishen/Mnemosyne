@@ -482,7 +482,16 @@ def parse_topic_pdfs(
     if not papers:
         return results
 
-    with ThreadPoolExecutor(max_workers=3) as executor:
+    # Respect configured MinerU workers concurrency to prevent GPU OOM (RTX 3070 8GB VRAM limit)
+    max_workers = settings.mineru_workers if settings.pdf_parser in ("mineru", "auto") else 3
+    if settings.mineru_gpu and max_workers > 1:
+        logger.warning(
+            f"GPU acceleration is active. Capping parsing workers from {max_workers} to 1 "
+            "to prevent RTX 3070 8GB VRAM OOM."
+        )
+        max_workers = 1
+
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = {
             executor.submit(_parse_paper_worker, paper["paper_id"], settings): paper
             for paper in papers

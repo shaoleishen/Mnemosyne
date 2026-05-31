@@ -72,6 +72,47 @@ def download_paper_pdf(
         except (json.JSONDecodeError, TypeError):
             pass
 
+    # Try direct OA URL first if available
+    if oa_pdf_url:
+        from knowcran.paper_fetch.sources.direct_url import try_direct_url
+        from knowcran.paper_fetch.pdf_utils import validate_pdf, safe_filename, compute_sha256
+        from knowcran.paper_fetch.cache import PDFCache
+
+        data, error = try_direct_url(oa_pdf_url, doi=doi, arxiv_id=arxiv_id)
+        if data:
+            valid, val_err = validate_pdf(data)
+            if valid:
+                # Store in cache
+                cache = PDFCache(settings.pdf_dir)
+                filename = safe_filename(title or "", doi)
+                file_path = str(cache.store(data, filename))
+                sha256 = compute_sha256(data)
+
+                asset_id = str(uuid.uuid4())
+                storage.insert_paper_asset(
+                    asset_id=asset_id,
+                    paper_id=paper_id,
+                    doi=doi,
+                    arxiv_id=arxiv_id,
+                    file_path=file_path,
+                    source="DirectUrl",
+                    strategy=strategy,
+                    status="downloaded",
+                    sha256=sha256,
+                    size_bytes=len(data),
+                )
+                return {
+                    "success": True,
+                    "identifier": doi or arxiv_id or paper_id,
+                    "doi": doi,
+                    "arxiv_id": arxiv_id,
+                    "source": "DirectUrl",
+                    "file": file_path,
+                    "sha256": sha256,
+                    "size_bytes": len(data),
+                    "asset_id": asset_id,
+                }
+
     from knowcran.paper_fetch.downloader import download_pdf
 
     result = download_pdf(

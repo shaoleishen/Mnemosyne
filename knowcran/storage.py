@@ -1063,12 +1063,17 @@ class Storage:
         return [dict(r) for r in rows]
 
     def sync_chunk_fts(self) -> None:
-        """Rebuild the FTS5 index from the chunks table."""
-        self.conn.execute(
-            "INSERT INTO paper_chunks_fts(rowid, chunk_id, paper_id, text, section) "
-            "SELECT rowid, chunk_id, paper_id, text, section FROM paper_fulltext_chunks"
-        )
+        """Rebuild the FTS5 index from the chunks table.
+
+        Uses the FTS5 'rebuild' command which is idempotent and safe to call
+        multiple times. This replaces the entire index with current data.
+        """
+        self.conn.execute("INSERT INTO paper_chunks_fts(paper_chunks_fts) VALUES('rebuild')")
         self.conn.commit()
+
+    def rebuild_fulltext_index(self) -> None:
+        """Public alias for sync_chunk_fts for clarity."""
+        self.sync_chunk_fts()
 
     # --- Paper Notes ---
 

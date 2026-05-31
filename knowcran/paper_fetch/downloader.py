@@ -30,6 +30,8 @@ class DownloadResult:
     size_bytes: int | None = None
     error: str | None = None
     asset_id: str = field(default_factory=lambda: str(uuid.uuid4()))
+    # Internal payload field - not serialized, used to pass bytes between download and cache store
+    _payload: bytes | None = field(default=None, repr=False, compare=False, init=False)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -107,7 +109,7 @@ def _try_source(source_cls: type[SourceBase], doi: str | None,
         if not valid:
             logger.debug(f"{source.name}: invalid PDF - {val_err}")
             return None
-        return DownloadResult(
+        result = DownloadResult(
             success=True,
             identifier=doi or arxiv_id or "unknown",
             doi=doi,
@@ -115,8 +117,9 @@ def _try_source(source_cls: type[SourceBase], doi: str | None,
             source=source.name,
             sha256=compute_sha256(data),
             size_bytes=len(data),
-            _data=data,
         )
+        result._payload = data
+        return result
     except Exception as e:
         logger.debug(f"{source.name} failed: {e}")
         return None
@@ -225,8 +228,9 @@ def _race_sources(sources: list[type[SourceBase]], doi: str | None,
                 if result and result.success:
                     # Store in cache
                     filename = safe_filename(title or "", doi)
-                    result.file_path = str(cache.store(result._data, filename))
-                    del result._data
+                    if result._payload:
+                        result.file_path = str(cache.store(result._payload, filename))
+                        result._payload = None  # Release memory
                     return result
             except Exception as e:
                 logger.debug(f"Source {futures[future].name} exception: {e}")
@@ -246,8 +250,9 @@ def _sequential_sources(sources: list[type[SourceBase]], doi: str | None,
         result = _try_source(src_cls, doi, arxiv_id, title)
         if result and result.success:
             filename = safe_filename(title or "", doi)
-            result.file_path = str(cache.store(result._data, filename))
-            del result._data
+            if result._payload:
+                result.file_path = str(cache.store(result._payload, filename))
+                result._payload = None  # Release memory
             return result
 
     return DownloadResult(

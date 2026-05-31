@@ -206,8 +206,19 @@ def _extract_fulltext_claims(paper: dict[str, Any], chunks: list[dict[str, Any]]
     Processes each chunk to extract methods, results, limitations,
     and key findings with full provenance (page, section, chunk_id).
     """
+    import json as _json
+
     paper_id = paper["paper_id"]
     claims: list[Claim] = []
+
+    def _make_source_span(chunk_id: str, page_start: int | None, page_end: int | None, section: str) -> str:
+        """Create a proper JSON source span string."""
+        return _json.dumps({
+            "chunk_id": chunk_id,
+            "page_start": page_start,
+            "page_end": page_end,
+            "section": section,
+        }, ensure_ascii=False)
 
     for chunk in chunks:
         chunk_text = chunk.get("text", "")
@@ -215,6 +226,7 @@ def _extract_fulltext_claims(paper: dict[str, Any], chunks: list[dict[str, Any]]
         page_start = chunk.get("page_start")
         page_end = chunk.get("page_end")
         section = chunk.get("section", "")
+        text_hash = chunk.get("text_hash", "")
 
         if not chunk_text.strip():
             continue
@@ -238,7 +250,7 @@ def _extract_fulltext_claims(paper: dict[str, Any], chunks: list[dict[str, Any]]
                     topic=topic,
                     evidence_status="full_text_reviewed",
                     source_quote=method_text[:500],
-                    source_span_json=f'{{"chunk_id":"{chunk_id}","page_start":{page_start},"page_end":{page_end},"section":"{section}"}}',
+                    source_span_json=_make_source_span(chunk_id, page_start, page_end, section),
                 ))
 
         # Extract result claims from Results/Discussion sections
@@ -260,7 +272,7 @@ def _extract_fulltext_claims(paper: dict[str, Any], chunks: list[dict[str, Any]]
                     topic=topic,
                     evidence_status="full_text_reviewed",
                     source_quote=result_text[:500],
-                    source_span_json=f'{{"chunk_id":"{chunk_id}","page_start":{page_start},"page_end":{page_end},"section":"{section}"}}',
+                    source_span_json=_make_source_span(chunk_id, page_start, page_end, section),
                 ))
 
         # Extract limitation claims
@@ -278,7 +290,7 @@ def _extract_fulltext_claims(paper: dict[str, Any], chunks: list[dict[str, Any]]
                     topic=topic,
                     evidence_status="full_text_reviewed",
                     source_quote=limit_text[:500],
-                    source_span_json=f'{{"chunk_id":"{chunk_id}","page_start":{page_start},"page_end":{page_end},"section":"{section}"}}',
+                    source_span_json=_make_source_span(chunk_id, page_start, page_end, section),
                 ))
 
         # Extract key findings from Abstract section
@@ -295,7 +307,7 @@ def _extract_fulltext_claims(paper: dict[str, Any], chunks: list[dict[str, Any]]
                     topic=topic,
                     evidence_status="full_text_reviewed",
                     source_quote=summary_text[:500],
-                    source_span_json=f'{{"chunk_id":"{chunk_id}","page_start":{page_start},"page_end":{page_end},"section":"Abstract"}}',
+                    source_span_json=_make_source_span(chunk_id, page_start, page_end, "abstract"),
                 ))
 
     return claims
@@ -338,14 +350,16 @@ def read_topic(topic: str, limit: int = 20, storage: Storage | None = None,
                llm_provider: Any | None = None,
                agent_provider: Any | None = None,
                fulltext: bool = False) -> list[Claim]:
+    from rich.console import Console
+    console = Console()
+
     own = storage is None
     storage = storage or Storage()
     try:
         # Resolve topic aliases
         resolved_topic = storage.resolve_topic(topic)
         if resolved_topic != topic:
-            from rich.console import Console
-            Console().print(f"  [dim]Resolved topic '{topic}' -> '{resolved_topic}'[/dim]")
+            console.print(f"  [dim]Resolved topic '{topic}' -> '{resolved_topic}'[/dim]")
 
         # Use explicit topic membership if available, fall back to text search
         if storage.has_topic_papers(resolved_topic):

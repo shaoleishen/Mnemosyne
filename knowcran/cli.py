@@ -132,38 +132,50 @@ def discover(
 def read_paper_cmd(
     paper_id: str = typer.Argument(help="Semantic Scholar paper ID"),
     topic: str | None = typer.Option(None, help="Topic to tag claims with (for review compatibility)"),
+    fulltext: bool = typer.Option(False, "--fulltext", help="Use parsed PDF chunks when available, falls back to abstract"),
     data_dir: str | None = typer.Option(None, "--data-dir", help="Data directory path"),
 ) -> None:
-    """Extract claims from a single paper's abstract."""
+    """Extract claims from a single paper. Uses abstract by default; use --fulltext for PDF chunks."""
     settings = _settings(data_dir, None)
     from knowcran.reading import read_paper
     from knowcran.storage import Storage
     storage = Storage(db_path=settings.db_path)
-    claims = read_paper(paper_id, topic=topic, storage=storage)
+    claims = read_paper(paper_id, topic=topic, storage=storage, fulltext=fulltext)
     if not claims:
         console.print("[yellow]Paper not found in database.[/yellow]")
         return
+    ft_count = sum(1 for c in claims if c.evidence_status == "full_text_reviewed")
+    abstract_count = sum(1 for c in claims if c.evidence_status != "full_text_reviewed")
+    if fulltext and ft_count > 0:
+        console.print(f"[dim]Full-text claims: {ft_count}, Abstract fallback: {abstract_count}[/dim]")
     for c in claims:
-        console.print(f"[bold]{c.evidence_type}[/bold] (conf {c.confidence}): {c.claim_text[:120]}")
+        status_tag = " [full-text]" if c.evidence_status == "full_text_reviewed" else ""
+        console.print(f"[bold]{c.evidence_type}[/bold] (conf {c.confidence}){status_tag}: {c.claim_text[:120]}")
 
 
 @app.command("read-topic")
 def read_topic_cmd(
     topic: str = typer.Argument(help="Topic to read"),
     limit: int = typer.Option(20, help="Max papers to process"),
+    fulltext: bool = typer.Option(False, "--fulltext", help="Use parsed PDF chunks when available, falls back to abstract"),
     data_dir: str | None = typer.Option(None, "--data-dir", help="Data directory path"),
     llm: bool | None = typer.Option(None, "--llm/--no-llm", help="Enable/disable LLM extraction"),
     agent_provider: str | None = typer.Option(None, "--agent-provider", help="Agent provider name"),
 ) -> None:
-    """Extract claims from all papers matching a topic."""
+    """Extract claims from all papers matching a topic. Use --fulltext for PDF chunks."""
     settings = _settings(data_dir, None)
     from knowcran.reading import read_topic
     from knowcran.storage import Storage
     storage = Storage(db_path=settings.db_path)
     agent_prov = _get_agent_provider(settings, agent_provider, llm)
     llm_prov = _get_llm_provider(settings, llm) if agent_prov is None else None
-    claims = read_topic(topic, limit=limit, storage=storage, llm_provider=llm_prov, agent_provider=agent_prov)
-    console.print(f"[green]Extracted {len(claims)} claims from topic papers.[/green]")
+    claims = read_topic(topic, limit=limit, storage=storage, llm_provider=llm_prov, agent_provider=agent_prov, fulltext=fulltext)
+    ft_count = sum(1 for c in claims if c.evidence_status == "full_text_reviewed")
+    abstract_count = sum(1 for c in claims if c.evidence_status != "full_text_reviewed")
+    if fulltext and ft_count > 0:
+        console.print(f"[green]Extracted {len(claims)} claims: {ft_count} full-text, {abstract_count} abstract-only.[/green]")
+    else:
+        console.print(f"[green]Extracted {len(claims)} claims from topic papers.[/green]")
 
 
 @app.command("export-obsidian")
@@ -185,19 +197,20 @@ def export_obsidian_cmd(
 def review(
     topic: str = typer.Argument(help="Topic to review"),
     max_papers: int = typer.Option(20, help="Max papers for review"),
+    fulltext: bool = typer.Option(False, "--fulltext", help="Prioritize full-text claims over abstract-only claims"),
     data_dir: str | None = typer.Option(None, "--data-dir", help="Data directory path"),
     vault_dir: str | None = typer.Option(None, "--vault-dir", help="Vault directory path"),
     llm: bool | None = typer.Option(None, "--llm/--no-llm", help="Enable/disable LLM review synthesis"),
     agent_provider: str | None = typer.Option(None, "--agent-provider", help="Agent provider name"),
 ) -> None:
-    """Generate a literature review from stored claims."""
+    """Generate a literature review from stored claims. Use --fulltext to prioritize full-text evidence."""
     settings = _settings(data_dir, vault_dir)
     from knowcran.review import review as do_review
     from knowcran.storage import Storage
     storage = Storage(db_path=settings.db_path)
     agent_prov = _get_agent_provider(settings, agent_provider, llm)
     llm_prov = _get_llm_provider(settings, llm) if agent_prov is None else None
-    output = do_review(topic, max_papers=max_papers, storage=storage, vault_dir=settings.vault_dir, llm_provider=llm_prov, agent_provider=agent_prov)
+    output = do_review(topic, max_papers=max_papers, storage=storage, vault_dir=settings.vault_dir, llm_provider=llm_prov, agent_provider=agent_prov, fulltext=fulltext)
     console.print(f"[green]Review generated with {len(output.evidence_matrix)} evidence items and {len(output.paper_ids)} papers.[/green]")
 
 
@@ -592,67 +605,55 @@ def topics_list(
 def run_topic_cmd(
     topic: str = typer.Argument(help="Topic for the full pipeline run"),
     limit: int = typer.Option(50, help="Max papers to process"),
-    strategy: str = typer.Option("fastest", help="Download strategy"),
+    strategy: str = typer.Option("fastest", help="Download strategy: fastest, oa_first, legal_only, scihub_only"),
+    fulltext: bool = typer.Option(True, "--fulltext/--abstract-only", help="Use full-text extraction when available"),
+    skip_discover: bool = typer.Option(False, "--skip-discover", help="Skip paper discovery step"),
+    skip_download: bool = typer.Option(False, "--skip-download", help="Skip PDF download step"),
+    skip_parse: bool = typer.Option(False, "--skip-parse", help="Skip PDF parse step"),
+    skip_review: bool = typer.Option(False, "--skip-review", help="Skip review generation step"),
     data_dir: str | None = typer.Option(None, "--data-dir", help="Data directory path"),
     vault_dir: str | None = typer.Option(None, "--vault-dir", help="Vault directory path"),
 ) -> None:
-    """Run the full pipeline: discover -> download -> parse -> extract -> notes -> review."""
+    """Run the full pipeline: discover -> download -> parse -> extract -> notes -> review.
+
+    Produces a structured output directory with run manifest, paper inventory,
+    evidence matrix, literature review, and bibliography.
+    """
     settings = _settings(data_dir, vault_dir)
-    from knowcran.storage import Storage
-    from knowcran.fulltext import download_topic_pdfs, parse_topic_pdfs
-    from knowcran.obsidian import export_obsidian
-    from knowcran.review import review as do_review
-    import uuid
-    from datetime import datetime, timezone
+    from knowcran.workflow import run_topic_workflow
 
-    storage = Storage(db_path=settings.db_path)
-    run_id = str(uuid.uuid4())
+    console.print(f"[bold]Starting pipeline for topic: {topic}[/bold]")
+    result = run_topic_workflow(
+        topic=topic,
+        limit=limit,
+        strategy=strategy,
+        settings=settings,
+        skip_discover=skip_discover,
+        skip_download=skip_download,
+        skip_parse=skip_parse,
+        skip_review=skip_review,
+        fulltext=fulltext,
+    )
 
-    try:
-        canonical_topic = storage.resolve_topic(topic)
-        console.print(f"[bold]Pipeline run {run_id} for topic: {canonical_topic}[/bold]")
-
-        # Step 1: Check existing papers
-        papers = storage.get_topic_papers(canonical_topic, limit=limit)
-        console.print(f"[1/5] Found {len(papers)} papers in database")
-        if not papers:
-            console.print("[yellow]No papers found. Run 'discover' first.[/yellow]")
-            return
-
-        # Step 2: Download PDFs
-        console.print("[2/5] Downloading PDFs...")
-        dl_result = download_topic_pdfs(canonical_topic, limit=limit, strategy=strategy, storage=storage, settings=settings)
-        console.print(f"  Downloaded: {dl_result['downloaded']}, Skipped: {dl_result['skipped']}, Failed: {dl_result['failed']}")
-
-        # Step 3: Parse PDFs
-        console.print("[3/5] Parsing PDFs...")
-        parse_result = parse_topic_pdfs(canonical_topic, limit=limit, storage=storage, settings=settings)
-        console.print(f"  Parsed: {parse_result['parsed']}, Skipped: {parse_result['skipped']}, Failed: {parse_result['failed']}")
-
-        # Step 4: Export Obsidian
-        console.print("[4/5] Exporting Obsidian notes...")
-        counts = export_obsidian(canonical_topic, storage=storage, vault_dir=settings.vault_dir)
-        console.print(f"  Papers: {counts['papers']}, Claims: {counts['claims']}, Topics: {counts['topics']}")
-
-        # Step 5: Generate review
-        console.print("[5/5] Generating literature review...")
-        output = do_review(canonical_topic, max_papers=limit, storage=storage, vault_dir=settings.vault_dir)
-        console.print(f"  Evidence items: {len(output.evidence_matrix)}, Papers: {len(output.paper_ids)}")
-
-        # Record run
-        storage.insert_review_run(
-            run_id=run_id,
-            topic=canonical_topic,
-            status="completed",
-            input_papers_json=str(len(papers)),
-            output_dir=str(settings.vault_dir / "reviews"),
-        )
-        console.print(f"[green]Pipeline complete! Run ID: {run_id}[/green]")
-    except Exception as e:
-        console.print(f"[red]Pipeline failed: {e}[/red]")
-        storage.insert_review_run(run_id=run_id, topic=topic, status="failed")
-    finally:
-        storage.close()
+    if result["status"] == "completed":
+        console.print(f"[green]Pipeline complete![/green]")
+        console.print(f"  Run ID: {result['run_id']}")
+        console.print(f"  Output: {result['output_dir']}")
+        steps = result.get("steps", {})
+        if "discover" in steps:
+            console.print(f"  Papers discovered: {steps['discover'].get('count', 0)}")
+        if "download" in steps and isinstance(steps["download"], dict):
+            console.print(f"  PDFs downloaded: {steps['download'].get('downloaded', 0)}")
+        if "parse" in steps and isinstance(steps["parse"], dict):
+            console.print(f"  PDFs parsed: {steps['parse'].get('parsed', 0)}")
+        if "extract" in steps:
+            console.print(f"  Claims extracted: {steps['extract'].get('total', 0)}")
+            console.print(f"    Full-text: {steps['extract'].get('fulltext', 0)}")
+            console.print(f"    Abstract-only: {steps['extract'].get('abstract_only', 0)}")
+        if "review" in steps and isinstance(steps["review"], dict):
+            console.print(f"  Review: {steps['review'].get('evidence_count', 0)} evidence items")
+    else:
+        console.print(f"[red]Pipeline failed: {result.get('error', 'Unknown error')}[/red]")
 
 
 @app.command("serve-mcp")

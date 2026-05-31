@@ -38,6 +38,7 @@ def generate_run_manifest(
     parsed_count: int,
     claim_count: int,
     status: str = "completed",
+    steps: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Generate and write a run manifest JSON file."""
     manifest = {
@@ -50,6 +51,7 @@ def generate_run_manifest(
         "parsed_count": parsed_count,
         "claim_count": claim_count,
         "output_dir": str(output_dir),
+        "steps": steps or {},
     }
     manifest_path = output_dir / "run_manifest.json"
     manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
@@ -171,10 +173,28 @@ def run_topic_workflow(
     storage: Storage | None = None,
     settings: Settings | None = None,
     output_base: Path | None = None,
+    skip_discover: bool = False,
+    skip_download: bool = False,
+    skip_parse: bool = False,
+    skip_review: bool = False,
+    fulltext: bool = True,
 ) -> dict[str, Any]:
     """Run the full topic research workflow.
 
     Pipeline: discover -> download -> parse -> extract -> notes -> matrix -> review -> bibliography -> manifest.
+
+    Args:
+        topic: Research topic
+        limit: Maximum papers to process
+        strategy: Download strategy (fastest, oa_first, legal_only, scihub_only)
+        storage: Storage instance (optional)
+        settings: Settings instance (optional)
+        output_base: Base directory for output (default: mnemosyne_output)
+        skip_discover: Skip discovery step
+        skip_download: Skip PDF download step
+        skip_parse: Skip PDF parse step
+        skip_review: Skip review generation step
+        fulltext: Use full-text extraction when available
     """
     settings = settings or Settings()
     storage = storage or Storage(settings.db_path)
@@ -192,31 +212,66 @@ def run_topic_workflow(
     }
 
     try:
-        # Get papers
+        # Step 1: Get papers (discover if needed)
         papers = storage.get_topic_papers(canonical_topic, limit=limit)
+        if not papers and not skip_discover:
+            # Auto-discover if no papers exist
+            from knowcran.discovery import discover as do_discover
+            from knowcran.semantic_scholar import SemanticScholarClient
+            client = SemanticScholarClient()
+            try:
+                discovered = do_discover(canonical_topic, limit=limit, client=client, storage=storage)
+                result["steps"]["discover"] = {"status": "completed", "count": len(discovered)}
+                papers = storage.get_topic_papers(canonical_topic, limit=limit)
+            except Exception as e:
+                result["steps"]["discover"] = {"status": "failed", "error": str(e)}
+            finally:
+                client.close()
+        elif skip_discover:
+            result["steps"]["discover"] = {"status": "skipped"}
+        else:
+            result["steps"]["discover"] = {"status": "completed", "count": len(papers)}
+
         result["steps"]["papers"] = len(papers)
 
-        # Download PDFs
-        from knowcran.fulltext import download_topic_pdfs
-        dl_result = download_topic_pdfs(canonical_topic, limit=limit, strategy=strategy,
-                                         storage=storage, settings=settings)
-        result["steps"]["download"] = dl_result
+        # Step 2: Download PDFs
+        if not skip_download:
+            from knowcran.fulltext import download_topic_pdfs
+            dl_result = download_topic_pdfs(canonical_topic, limit=limit, strategy=strategy,
+                                             storage=storage, settings=settings)
+            result["steps"]["download"] = dl_result
+        else:
+            dl_result = {"downloaded": 0, "skipped": 0, "failed": 0}
+            result["steps"]["download"] = {"status": "skipped"}
 
-        # Parse PDFs
-        from knowcran.fulltext import parse_topic_pdfs
-        parse_result = parse_topic_pdfs(canonical_topic, limit=limit, storage=storage, settings=settings)
-        result["steps"]["parse"] = parse_result
+        # Step 3: Parse PDFs
+        if not skip_parse:
+            from knowcran.fulltext import parse_topic_pdfs
+            parse_result = parse_topic_pdfs(canonical_topic, limit=limit, storage=storage, settings=settings)
+            result["steps"]["parse"] = parse_result
+        else:
+            parse_result = {"parsed": 0, "skipped": 0, "failed": 0}
+            result["steps"]["parse"] = {"status": "skipped"}
 
-        # Generate notes
+        # Step 4: Extract claims (fulltext or abstract)
+        from knowcran.reading import read_topic
+        claims = read_topic(canonical_topic, limit=limit, storage=storage, fulltext=fulltext)
+        ft_count = sum(1 for c in claims if c.evidence_status == "full_text_reviewed")
+        abstract_count = len(claims) - ft_count
+        result["steps"]["extract"] = {
+            "status": "completed",
+            "total": len(claims),
+            "fulltext": ft_count,
+            "abstract_only": abstract_count,
+        }
+
+        # Step 5: Generate notes
         from knowcran.notes import generate_topic_notes
         notes_result = generate_topic_notes(canonical_topic, limit=limit, storage=storage)
         result["steps"]["notes"] = notes_result
 
-        # Get all claims
-        claims = storage.get_claims_by_topic(canonical_topic)
-        result["steps"]["claims"] = len(claims)
-
-        # Generate outputs
+        # Step 6: Generate output artifacts
+        # Paper inventory
         papers_with_status = []
         for p in papers:
             pid = p["paper_id"]
@@ -229,8 +284,52 @@ def run_topic_workflow(
         generate_topic_summary(canonical_topic, papers_with_status, claims, output_dir)
         generate_evidence_matrix_csv(claims, {p["paper_id"]: p for p in papers}, output_dir)
 
-        # Generate manifest
-        generate_run_manifest(
+        # PDF status
+        all_assets = []
+        for p in papers:
+            assets = storage.get_assets_for_paper(p["paper_id"])
+            all_assets.extend(assets)
+        generate_pdf_status_csv(all_assets, output_dir)
+
+        # Step 7: Generate review
+        if not skip_review:
+            from knowcran.review import review as do_review
+            from knowcran.bibtex import papers_to_bibtex
+            from knowcran.utils import slugify
+
+            output = do_review(canonical_topic, max_papers=limit, storage=storage,
+                              vault_dir=settings.vault_dir, fulltext=fulltext)
+
+            # Copy review artifacts to output directory
+            slug = slugify(canonical_topic)
+            reviews_dir = settings.vault_dir / "reviews"
+            for name, suffix in [
+                ("literature_review", f"{slug}_review.md"),
+                ("evidence_matrix", f"{slug}_evidence_matrix.csv"),
+                ("bibliography", f"{slug}_bibliography.bib"),
+                ("open_questions", f"{slug}_open_questions.md"),
+            ]:
+                src = reviews_dir / suffix
+                if src.exists():
+                    dst = output_dir / f"{name}.md" if name.endswith("review") or name.endswith("questions") else output_dir / suffix
+                    if name == "literature_review":
+                        dst = output_dir / "literature_review.md"
+                    elif name == "open_questions":
+                        dst = output_dir / "open_questions.md"
+                    else:
+                        dst = output_dir / suffix
+                    dst.write_text(src.read_text(encoding="utf-8"), encoding="utf-8")
+
+            result["steps"]["review"] = {
+                "status": "completed",
+                "evidence_count": len(output.evidence_matrix),
+                "paper_count": len(output.paper_ids),
+            }
+        else:
+            result["steps"]["review"] = {"status": "skipped"}
+
+        # Step 8: Generate manifest
+        manifest = generate_run_manifest(
             run_id=run_id,
             topic=canonical_topic,
             output_dir=output_dir,
@@ -239,15 +338,17 @@ def run_topic_workflow(
             parsed_count=parse_result.get("parsed", 0),
             claim_count=len(claims),
             status="completed",
+            steps=result["steps"],
         )
+        result["manifest"] = manifest
 
         # Record in DB
         storage.insert_review_run(
             run_id=run_id,
             topic=canonical_topic,
             status="completed",
-            input_papers_json=str(len(papers)),
-            input_claims_json=str(len(claims)),
+            input_papers_json=json.dumps({"count": len(papers)}),
+            input_claims_json=json.dumps({"count": len(claims), "fulltext": ft_count, "abstract": abstract_count}),
             output_dir=str(output_dir),
         )
 

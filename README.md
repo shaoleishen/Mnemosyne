@@ -47,6 +47,21 @@ Python 3.12 or newer is required.
 
 ## Quick Start
 
+### Recommended: Single Pipeline Command
+
+```bash
+# Run the complete pipeline (discover -> download -> parse -> extract -> notes -> review).
+knowcran run-topic "intracerebral hemorrhage" --limit 50
+
+# Use legal-only sources (no Sci-Hub/LibGen).
+knowcran run-topic "intracerebral hemorrhage" --limit 50 --strategy legal_only
+
+# Skip discovery if papers already exist.
+knowcran run-topic "intracerebral hemorrhage" --limit 20 --skip-discover
+```
+
+### Step-by-Step Workflow
+
 ```bash
 # Discover literature.
 knowcran discover "intracerebral hemorrhage" --limit 100
@@ -57,7 +72,7 @@ knowcran download-topic "intracerebral hemorrhage" --limit 20 --strategy fastest
 # Parse downloaded PDFs into text chunks.
 knowcran parse-topic "intracerebral hemorrhage" --limit 20
 
-# Extract claims from full text.
+# Extract claims from full text (falls back to abstract if no PDF).
 knowcran read-topic "intracerebral hemorrhage" --limit 50 --fulltext
 
 # Search fulltext chunks.
@@ -65,9 +80,6 @@ knowcran search-fulltext "hematoma expansion" --topic "intracerebral hemorrhage"
 
 # Generate a full-text review.
 knowcran review "intracerebral hemorrhage" --max-papers 30 --fulltext
-
-# Run the complete pipeline (discover -> download -> parse -> extract -> review).
-knowcran run-topic "intracerebral hemorrhage" --limit 50
 
 # Export Obsidian notes and review artifacts.
 knowcran export-obsidian "intracerebral hemorrhage"

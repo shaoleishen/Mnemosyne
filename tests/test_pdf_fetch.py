@@ -193,3 +193,25 @@ class TestDownloadResult:
         assert d["success"] is True
         assert d["identifier"] == "10.1234/example"
         assert d["source"] == "arXiv"
+
+    def test_payload_not_in_dict(self):
+        """Payload bytes must never appear in serialized output."""
+        result = DownloadResult(
+            success=True,
+            identifier="10.1234/example",
+            doi="10.1234/example",
+            source="arXiv",
+        )
+        result._payload = b"%PDF-1.4 fake content"
+        d = result.to_dict()
+        assert "_payload" not in d
+        # Verify no bytes leak
+        for key, value in d.items():
+            assert not isinstance(value, bytes), f"Bytes leaked in key '{key}'"
+
+    def test_payload_field(self):
+        """Payload field stores bytes correctly."""
+        result = DownloadResult(success=True, identifier="test")
+        assert result._payload is None
+        result._payload = b"%PDF-1.4 test"
+        assert result._payload == b"%PDF-1.4 test"

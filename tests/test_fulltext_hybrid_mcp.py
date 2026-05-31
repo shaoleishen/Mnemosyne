@@ -89,6 +89,12 @@ def test_mineru_parser_client(mock_post, tmp_path):
                     "text": "This is paragraph two.",
                     "page_idx": 1,
                     "bbox": [50, 500, 400, 550]
+                },
+                {
+                    "type": "formula",
+                    "text": "E = mc^2",
+                    "page_idx": 1,
+                    "bbox": [50, 400, 300, 450]
                 }
             ]
         }
@@ -105,9 +111,11 @@ def test_mineru_parser_client(mock_post, tmp_path):
     assert doc.status == "parsed"
     assert doc.parser_name == "mineru"
     assert len(doc.pages) == 2
-    assert len(doc.elements) == 3
+    assert len(doc.elements) == 4
     assert doc.elements[0].section == "Introduction"
     assert doc.elements[1].bbox == [50, 600, 400, 650]
+    assert doc.elements[3].element_type == "formula"
+    assert doc.elements[3].text == "$$\nE = mc^2\n$$"
 
 
 # ---------------------------------------------------------------------------
@@ -247,6 +255,10 @@ def test_obsidian_export_metadata_and_backlinks(tmp_path):
 
     # Verify backlinks between paper and layout chunk notes
     assert "[[chunk-obs-1|Chunk 0 (Pages 1-1 - Methods)]]" in paper_content
+
+    # Verify claim formatting inside callouts
+    assert "> [!success] Result (conf: 0.95)" in paper_content
+    assert "> Obsidian export is functional" in paper_content
 
     chunk_note_file = vault_dir / "chunks" / "chunk-obs-1.md"
     assert chunk_note_file.exists()

@@ -111,6 +111,11 @@ class MinerUParser(BaseParser):
                     if el_type == "text":
                         el_type = "paragraph"
 
+                    # Wrap formulas/equations in $$ ... $$ for proper rendering in Obsidian
+                    if el_type in ("formula", "equation"):
+                        if not (text.startswith("$$") or text.startswith("$")):
+                            text = f"$$\n{text}\n$$"
+
                     elements.append(ParsedElement(
                         element_id=str(uuid.uuid4()),
                         paper_id=paper_id,

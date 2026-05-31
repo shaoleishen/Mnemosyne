@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import logging
 import uuid
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -148,6 +149,33 @@ def download_paper_pdf(
     return result.to_dict()
 
 
+def _download_paper_worker(paper_id: str, strategy: str, settings: Settings) -> dict[str, Any]:
+    from knowcran.storage import Storage
+    storage = Storage(settings.db_path)
+    try:
+        return download_paper_pdf(
+            paper_id=paper_id,
+            strategy=strategy,
+            storage=storage,
+            settings=settings,
+        )
+    finally:
+        storage.close()
+
+
+def _parse_paper_worker(paper_id: str, settings: Settings) -> dict[str, Any]:
+    from knowcran.storage import Storage
+    storage = Storage(settings.db_path)
+    try:
+        return parse_paper_pdf(
+            paper_id=paper_id,
+            storage=storage,
+            settings=settings,
+        )
+    finally:
+        storage.close()
+
+
 def download_topic_pdfs(
     topic: str,
     limit: int = 20,
@@ -155,15 +183,24 @@ def download_topic_pdfs(
     storage: Storage | None = None,
     settings: Settings | None = None,
 ) -> dict[str, Any]:
-    """Download PDFs for all papers in a topic.
+    """Download PDFs for all papers in a topic concurrently.
 
     Returns summary of download results.
     """
     settings = settings or Settings()
-    storage = storage or Storage(settings.db_path)
-
-    canonical_topic = storage.resolve_topic(topic)
-    papers = storage.get_topic_papers(canonical_topic, limit=limit)
+    
+    # We open a temporary connection to resolve the topic and get paper list
+    own_storage = False
+    if not storage:
+        storage = Storage(settings.db_path)
+        own_storage = True
+        
+    try:
+        canonical_topic = storage.resolve_topic(topic)
+        papers = storage.get_topic_papers(canonical_topic, limit=limit)
+    finally:
+        if own_storage:
+            storage.close()
 
     results = {
         "topic": canonical_topic,
@@ -174,22 +211,33 @@ def download_topic_pdfs(
         "details": [],
     }
 
-    for paper in papers:
-        pid = paper["paper_id"]
-        detail = download_paper_pdf(
-            paper_id=pid,
-            strategy=strategy,
-            storage=storage,
-            settings=settings,
-        )
-        results["details"].append(detail)
-        if detail.get("success"):
-            if detail.get("message") == "Already downloaded":
-                results["skipped"] += 1
-            else:
-                results["downloaded"] += 1
-        else:
-            results["failed"] += 1
+    if not papers:
+        return results
+
+    with ThreadPoolExecutor(max_workers=5) as executor:
+        futures = {
+            executor.submit(_download_paper_worker, paper["paper_id"], strategy, settings): paper
+            for paper in papers
+        }
+        for future in as_completed(futures):
+            paper = futures[future]
+            try:
+                detail = future.result()
+                results["details"].append(detail)
+                if detail.get("success"):
+                    if detail.get("message") == "Already downloaded":
+                        results["skipped"] += 1
+                    else:
+                        results["downloaded"] += 1
+                else:
+                    results["failed"] += 1
+            except Exception as e:
+                results["failed"] += 1
+                results["details"].append({
+                    "success": False,
+                    "paper_id": paper["paper_id"],
+                    "error": f"Download thread raised exception: {e}"
+                })
 
     return results
 
@@ -385,15 +433,24 @@ def parse_topic_pdfs(
     storage: Storage | None = None,
     settings: Settings | None = None,
 ) -> dict[str, Any]:
-    """Parse all downloaded PDFs for a topic.
+    """Parse all downloaded PDFs for a topic concurrently.
 
     Returns summary of parse results.
     """
     settings = settings or Settings()
-    storage = storage or Storage(settings.db_path)
-
-    canonical_topic = storage.resolve_topic(topic)
-    papers = storage.get_topic_papers(canonical_topic, limit=limit)
+    
+    # We open a temporary connection to resolve the topic and get paper list
+    own_storage = False
+    if not storage:
+        storage = Storage(settings.db_path)
+        own_storage = True
+        
+    try:
+        canonical_topic = storage.resolve_topic(topic)
+        papers = storage.get_topic_papers(canonical_topic, limit=limit)
+    finally:
+        if own_storage:
+            storage.close()
 
     results = {
         "topic": canonical_topic,
@@ -404,21 +461,33 @@ def parse_topic_pdfs(
         "details": [],
     }
 
-    for paper in papers:
-        pid = paper["paper_id"]
-        detail = parse_paper_pdf(
-            paper_id=pid,
-            storage=storage,
-            settings=settings,
-        )
-        results["details"].append(detail)
-        if detail.get("success"):
-            if detail.get("message") == "Already parsed":
-                results["skipped"] += 1
-            else:
-                results["parsed"] += 1
-        else:
-            results["failed"] += 1
+    if not papers:
+        return results
+
+    with ThreadPoolExecutor(max_workers=3) as executor:
+        futures = {
+            executor.submit(_parse_paper_worker, paper["paper_id"], settings): paper
+            for paper in papers
+        }
+        for future in as_completed(futures):
+            paper = futures[future]
+            try:
+                detail = future.result()
+                results["details"].append(detail)
+                if detail.get("success"):
+                    if detail.get("message") == "Already parsed":
+                        results["skipped"] += 1
+                    else:
+                        results["parsed"] += 1
+                else:
+                    results["failed"] += 1
+            except Exception as e:
+                results["failed"] += 1
+                results["details"].append({
+                    "success": False,
+                    "paper_id": paper["paper_id"],
+                    "error": f"Parse thread raised exception: {e}"
+                })
 
     return results
 

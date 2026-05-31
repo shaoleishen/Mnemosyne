@@ -11,6 +11,33 @@ from knowcran.storage import Storage
 from knowcran.utils import citation_key, paper_note_stem, slugify
 
 
+def _format_claim_callout(c: dict[str, Any]) -> str:
+    etype = c.get("evidence_type", "paragraph")
+    conf = c.get("confidence", 0.0)
+    text = c.get("claim_text", "").strip()
+    
+    if etype == "result":
+        callout_type = "success"
+        title = f"Result (conf: {conf})"
+    elif etype == "limitation":
+        callout_type = "warning"
+        title = f"Limitation (conf: {conf})"
+    elif etype == "method":
+        callout_type = "info"
+        title = f"Method (conf: {conf})"
+    elif etype == "open_question":
+        callout_type = "question"
+        title = f"Open Question (conf: {conf})"
+    else:
+        callout_type = "note"
+        title = f"{etype.replace('_', ' ').title()} (conf: {conf})"
+        
+    callout = f"> [!{callout_type}] {title}\n"
+    for line in text.split("\n"):
+        callout += f"> {line}\n"
+    return callout + "\n"
+
+
 def _paper_note(
     paper: dict[str, Any],
     claims: list[dict[str, Any]],
@@ -61,27 +88,26 @@ tags:
     if claims:
         body += "## Key Claims\n\n"
         for c in claims:
-            body += f"- **{c['evidence_type']}** (conf {c['confidence']}): {c['claim_text']}\n"
-        body += "\n"
+            body += _format_claim_callout(c)
 
     methods = [c for c in claims if c["evidence_type"] == "method"]
     if methods:
         body += "## Methods\n\n"
         for m in methods:
-            body += m["claim_text"] + "\n\n"
+            body += _format_claim_callout(m)
 
     limitations = [c for c in claims if c["evidence_type"] == "limitation"]
     if limitations:
         body += "## Limitations\n\n"
         for l in limitations:
-            body += l["claim_text"] + "\n\n"
+            body += _format_claim_callout(l)
 
     open_qs = [c for c in claims if c["evidence_type"] == "open_question"]
     if open_qs:
         body += "## Open Questions\n\n"
         for q in open_qs:
-            body += f"- {q['claim_text']}\n"
-        body += "\n"
+            body += _format_claim_callout(q)
+
 
     if links:
         body += "## Links\n\n"

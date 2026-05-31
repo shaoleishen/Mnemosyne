@@ -441,6 +441,160 @@ def llm_doctor(
             console.print(f"[red]Live test failed: {e}[/red]")
 
 
+
+
+
+@app.command("doctor")
+def doctor_cmd(
+    data_dir: str | None = typer.Option(None, "--data-dir", help="Data directory path"),
+    live: bool = typer.Option(False, "--live", help="Run a live health check on remote services"),
+) -> None:
+    """Diagnose the local environment, dependencies, database, and configurations."""
+    import sys
+    import platform
+    import sqlite3
+    from knowcran.config import Settings
+    from knowcran.storage import Storage
+
+    settings = _settings(data_dir, None)
+
+    console.print("[bold cyan]========================================[/bold cyan]")
+    console.print("[bold cyan]       KnowCran System Diagnostician    [/bold cyan]")
+    console.print("[bold cyan]========================================[/bold cyan]\n")
+
+    # 1. System Platform & Python
+    console.print("[bold]1. Python & System Platform[/bold]")
+    console.print(f"  Python Version: {sys.version}")
+    console.print(f"  Platform: {platform.platform()}")
+    console.print(f"  Architecture: {platform.machine()}")
+    console.print()
+
+    # 2. SQLite FTS5 Check
+    console.print("[bold]2. Database Engines[/bold]")
+    db_path = settings.db_path
+    console.print(f"  Database Path: {db_path}")
+    
+    try:
+        conn = sqlite3.connect(":memory:")
+        conn.execute("CREATE VIRTUAL TABLE test_fts USING fts5(content);")
+        conn.close()
+        console.print("  SQLite FTS5 Extension: [green]Available[/green]")
+    except Exception as e:
+        console.print(f"  SQLite FTS5 Extension: [red]NOT Available[/red] ({e})")
+
+    # Check local db
+    db_exists = db_path.exists()
+    if db_exists:
+        try:
+            storage = Storage(db_path)
+            console.print("  Database File: [green]Exists & Readable[/green]")
+            console.print(f"    Papers: {storage.count_papers()}")
+            console.print(f"    Claims: {storage.count_claims()}")
+            console.print(f"    Links: {storage.count_links()}")
+            
+            # Safely check if paper_chunks table exists and count
+            try:
+                chunk_count = storage.conn.execute('SELECT count(*) FROM paper_chunks').fetchone()[0]
+                console.print(f"    Layout Chunks: {chunk_count}")
+            except Exception:
+                console.print("    Layout Chunks: 0 (table not initialized)")
+            storage.close()
+        except Exception as e:
+            console.print(f"  Database File: [red]Error reading database[/red] ({e})")
+    else:
+        console.print("  Database File: [yellow]Not initialized yet[/yellow] (Run 'knowcran init')")
+    console.print()
+
+    # 3. PDF Ingestion & Parsers
+    console.print("[bold]3. PDF Ingestion & Parsers[/bold]")
+    console.print(f"  PDF Directory: {settings.pdf_dir}")
+    console.print(f"  Configured Parser strategy: {settings.pdf_parser}")
+    
+    # Check PyMuPDF
+    try:
+        import pymupdf
+        console.print(f"  PyMuPDF (fitz): [green]Installed[/green] (version {pymupdf.__version__})")
+    except ImportError:
+        console.print("  PyMuPDF (fitz): [red]NOT Installed[/red] (Install using pip install pymupdf)")
+
+    # Check MinerU API
+    mineru_url = settings.mineru_api_url
+    console.print(f"  MinerU API Endpoint: {mineru_url}")
+    if live:
+        import httpx
+        try:
+            httpx.get(mineru_url, timeout=1.5)
+            console.print("    MinerU API Health: [green]Online & Responsive[/green]")
+        except Exception as e:
+            console.print(f"    MinerU API Health: [yellow]Offline or Unresponsive[/yellow] ({e})")
+    else:
+        console.print("    MinerU API Health: [dim]Skipped (run with --live to probe)[/dim]")
+    console.print()
+
+    # 4. Dense Embeddings
+    console.print("[bold]4. Dense Embeddings & Vector Search[/bold]")
+    console.print(f"  Embedding Provider: {settings.embedding_provider}")
+    console.print(f"  Embedding Model: {settings.embedding_model}")
+    console.print(f"  Embedding API Base: {settings.openai_api_base}")
+    has_key = bool(settings.openai_api_key)
+    key_status = "[green]Configured[/green]" if has_key else "[red]Missing (Embeddings & vector search will be disabled)[/red]"
+    console.print(f"  OpenAI API Key: {key_status}")
+    if live and has_key and settings.embedding_provider == "openai":
+        from knowcran.embeddings import EmbeddingProvider
+        try:
+            prov = EmbeddingProvider(settings)
+            vecs = prov.embed_texts(["healthcheck"])
+            if vecs and any(vecs[0]):
+                console.print(f"    OpenAI Embeddings Test: [green]Success[/green] (Vector dimension: {len(vecs[0])})")
+            else:
+                console.print("    OpenAI Embeddings Test: [red]Failed (returned empty/zero vector)[/red]")
+        except Exception as e:
+            console.print(f"    OpenAI Embeddings Test: [red]Failed[/red] ({e})")
+    elif live:
+        console.print("    OpenAI Embeddings Test: [dim]Skipped (no key or provider set to none)[/dim]")
+    else:
+        console.print("    OpenAI Embeddings Test: [dim]Skipped (run with --live to probe)[/dim]")
+    console.print()
+
+    # 5. LLM & Agent Providers
+    console.print("[bold]5. LLM & Agent Providers[/bold]")
+    console.print(f"  LLM Provider: {settings.llm_provider}")
+    if settings.llm_provider == "claw":
+        console.print(f"  Claw Binary: {settings.claw_bin}")
+        if settings.claw_bin:
+            exists = Path(settings.claw_bin).exists()
+            status = "[green]Exists[/green]" if exists else "[red]NOT Found[/red]"
+            console.print(f"    Binary Status: {status}")
+        else:
+            console.print("    Binary Status: [red]No claw binary path configured[/red]")
+    console.print()
+
+    # 6. PDF Downloader Engines
+    console.print("[bold]6. PDF Downloader Engines[/bold]")
+    console.print(f"  Sci-Hub Fallback Enabled: {settings.scihub_enabled}")
+    console.print(f"  LibGen Fallback Enabled: {settings.libgen_enabled}")
+    if live:
+        import httpx
+        # Check internet / Semantic scholar API connectivity
+        try:
+            httpx.get("https://api.semanticscholar.org", timeout=2.0)
+            console.print("  Internet & Semantic Scholar API: [green]Connected[/green]")
+        except Exception as e:
+            console.print(f"  Internet & Semantic Scholar API: [red]Offline / Unreachable[/red] ({e})")
+    else:
+        console.print("  Internet connectivity probe: [dim]Skipped (run with --live to probe)[/dim]")
+    console.print()
+
+
+@app.command("pdf-doctor")
+def pdf_doctor_cmd(
+    data_dir: str | None = typer.Option(None, "--data-dir", help="Data directory path"),
+    live: bool = typer.Option(False, "--live", help="Run a live health check on remote services"),
+) -> None:
+    """Diagnose the local environment, dependencies, database, and configurations (doctor alias)."""
+    doctor_cmd(data_dir=data_dir, live=live)
+
+
 agents_app = typer.Typer(name="agents", help="Manage agent providers.")
 app.add_typer(agents_app, name="agents")
 

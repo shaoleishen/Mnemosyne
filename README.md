@@ -78,6 +78,31 @@ Environment variables are read from `.env`:
 | `MNEMOSYNE_CLAW_TIMEOUT_SECONDS` | `600` | Timeout for LLM subprocess calls. |
 | `MNEMOSYNE_CLAW_MAX_RETRIES` | `2` | Max retries for LLM subprocess calls. |
 | `MNEMOSYNE_LLM_CACHE_DIR` | `data/raw/llm` | Directory for LLM run artifacts. |
+| `MNEMOSYNE_PDF_DOWNLOAD_ENABLED` | `true` | Enable or disable full-text PDF download workflow. |
+| `MNEMOSYNE_PDF_DIR` | `data/pdfs` | Directory for caching downloaded PDF files. |
+| `MNEMOSYNE_PDF_STRATEGY` | `fastest` | Download precedence (e.g., direct OA url first, then index sources). |
+| `MNEMOSYNE_SCIHUB_ENABLED` | `true` | Enable Sci-Hub fallback search for downloaded papers. |
+| `MNEMOSYNE_LIBGEN_ENABLED` | `true` | Enable LibGen fallback search for downloaded papers. |
+| `MNEMOSYNE_PDF_PARSER` | `auto` | PDF parser: `auto` (probes MinerU, falls back to PyMuPDF), `mineru`, or `pymupdf`. |
+| `MINERU_API_URL` | `http://127.0.0.1:8000` | Local or remote MinerU API endpoint url. |
+| `MNEMOSYNE_EMBEDDING_PROVIDER` | `openai` | Embedding provider: `openai` or `none` (degraded/FTS5-only mode). |
+| `MNEMOSYNE_EMBEDDING_MODEL` | `text-embedding-3-large` | Model used for generating semantic chunk vectors. |
+| `MNEMOSYNE_EMBEDDING_API_BASE` | `https://api.openai.com/v1` | Custom API base url for OpenAI-compatible embeddings. |
+
+## Sci-Hub & LibGen Compliance Disclaimer
+
+> [!WARNING]
+> **Copyright and Legal Warning**:
+> - Mnemosyne defaults to enabling Sci-Hub and LibGen integrations (`MNEMOSYNE_SCIHUB_ENABLED=true` and `MNEMOSYNE_LIBGEN_ENABLED=true`) to assist researchers in retrieving academic materials.
+> - Downloading copyrighted scientific papers through these unauthorized index sources may violate intellectual property or copyright laws depending on your jurisdiction.
+> - **The authors and contributors of Mnemosyne assume no liability for user activities.**
+> - To prioritize legal and open-access downloads, the tool always queries direct open-access URLs and official publisher sources first.
+> - To completely turn off unauthorized sources, modify your `.env` file to set:
+>   ```env
+>   MNEMOSYNE_SCIHUB_ENABLED=false
+>   MNEMOSYNE_LIBGEN_ENABLED=false
+>   ```
+
 
 ## MCP Server Profiles
 

@@ -675,4 +675,4 @@ def get_admin_tools() -> list[dict[str, Any]]:
 
 def get_admin_profile_tools() -> list[dict[str, Any]]:
     """Return all tools exposed by the local admin profile."""
-    return get_read_tools() + get_write_tools() + get_audit_tools() + get_admin_tools()
+    return get_all_tools() + get_admin_tools()

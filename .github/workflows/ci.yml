@@ -1,0 +1,72 @@
+name: CI Pipeline
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  test:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        python-version: ["3.12", "3.13"]
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ matrix.python-version }}
+        cache: 'pip'
+        cache-dependency-path: 'pyproject.toml'
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        python -m pip install -e ".[dev]"
+
+    - name: Lint and Compile Syntax Check
+      run: |
+        python -m compileall knowcran/
+
+    - name: Run pytest suite
+      run: |
+        python -m pytest --cov=knowcran --cov-report=term-missing
+
+    - name: CLI Smoke Test
+      run: |
+        knowcran --help
+        mnemosyne --help
+
+    - name: MCP Smoke Test
+      run: |
+        python -c "from knowcran.server.mcp import _create_readonly_server; _create_readonly_server()"
+        python -c "from knowcran.server.mcp import _create_curate_server; _create_curate_server()"
+
+  package:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: "3.12"
+
+    - name: Install packaging tools
+      run: |
+        python -m pip install --upgrade pip
+        python -m pip install build twine
+
+    - name: Build sdist and wheel
+      run: |
+        python -m build
+
+    - name: Twine check package metadata
+      run: |
+        twine check dist/*

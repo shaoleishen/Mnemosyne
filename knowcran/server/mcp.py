@@ -801,11 +801,14 @@ def _handle_search_fulltext_hybrid(params: dict[str, Any]) -> dict[str, Any]:
             limit=params.get("limit", 20),
             storage=storage,
         )
-        return {
+        resp = {
             "results": results,
             "count": len(results),
             "query": params["query"],
         }
+        if getattr(results, "degraded_reason", None):
+            resp["degraded_reason"] = results.degraded_reason
+        return resp
     finally:
         storage.close()
 

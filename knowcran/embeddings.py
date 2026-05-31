@@ -35,44 +35,36 @@ class EmbeddingProvider:
         # Strip strings to avoid empty input errors
         cleaned_texts = [t.strip() if t.strip() else " " for t in texts]
 
-        # Use mock embeddings if provider is none/mock or key is missing
-        if self.provider == "none" or not self.api_key:
-            logger.warning("No OpenAI API key found or provider set to none. Generating mock/zero embeddings.")
-            # Default dimension for text-embedding-3-large is 3072, default for small is 1536
-            dim = 3072 if "large" in self.model else 1536
-            return [[0.0] * dim for _ in cleaned_texts]
+        # Throw exception if provider is none/mock or key is missing
+        if self.provider == "none":
+            raise ValueError("Embedding provider is set to 'none'.")
+        if not self.api_key:
+            raise ValueError("OpenAI API key is missing. Cannot generate embeddings.")
 
-        try:
-            headers = {
-                "Authorization": f"Bearer {self.api_key}",
-                "Content-Type": "application/json",
-            }
-            payload = {
-                "input": cleaned_texts,
-                "model": self.model,
-            }
-            
-            logger.info(f"Generating embeddings for {len(texts)} chunks using {self.model} via {self.provider}")
-            response = httpx.post(
-                f"{self.api_base}/embeddings",
-                headers=headers,
-                json=payload,
-                timeout=60.0
-            )
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+        }
+        payload = {
+            "input": cleaned_texts,
+            "model": self.model,
+        }
+        
+        logger.info(f"Generating embeddings for {len(texts)} chunks using {self.model} via {self.provider}")
+        response = httpx.post(
+            f"{self.api_base}/embeddings",
+            headers=headers,
+            json=payload,
+            timeout=60.0
+        )
 
-            if response.status_code != 200:
-                raise ValueError(f"Embedding API error {response.status_code}: {response.text}")
+        if response.status_code != 200:
+            raise ValueError(f"Embedding API error {response.status_code}: {response.text}")
 
-            resp_json = response.json()
-            data = resp_json.get("data", [])
-            # Sort by index to maintain original order
-            data_sorted = sorted(data, key=lambda x: x.get("index", 0))
-            
-            embeddings = [item["embedding"] for item in data_sorted]
-            return embeddings
-
-        except Exception as e:
-            logger.error(f"Failed to generate embeddings: {e}")
-            # Generate fallback zero embeddings to prevent pipeline crash
-            dim = 3072 if "large" in self.model else 1536
-            return [[0.0] * dim for _ in cleaned_texts]
+        resp_json = response.json()
+        data = resp_json.get("data", [])
+        # Sort by index to maintain original order
+        data_sorted = sorted(data, key=lambda x: x.get("index", 0))
+        
+        embeddings = [item["embedding"] for item in data_sorted]
+        return embeddings

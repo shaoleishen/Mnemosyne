@@ -309,6 +309,17 @@ def parse_paper_pdf(
 
     # Choose parser based on settings
     parser_type = settings.pdf_parser
+    if parser_type == "auto":
+        import httpx
+        try:
+            # Quick probe to check if MinerU service is active
+            httpx.get(settings.mineru_api_url, timeout=1.0)
+            logger.info("MinerU API is responsive. Selecting 'mineru' parser under 'auto' strategy.")
+            parser_type = "mineru"
+        except Exception:
+            logger.info("MinerU API is not responsive. Selecting 'pymupdf' parser under 'auto' strategy.")
+            parser_type = "pymupdf"
+
     parser = MinerUParser(api_url=settings.mineru_api_url) if parser_type == "mineru" else PyMuPDFParser()
 
     logger.info(f"Parsing PDF for paper {paper_id} using {parser_type} (file: {downloaded['file_path']})")
@@ -509,6 +520,13 @@ def search_fulltext(
     return storage.search_fulltext(query, topic=topic, paper_id=paper_id, limit=limit)
 
 
+class HybridSearchResult(list):
+    """Custom list subclass that carries search metadata like degraded_reason."""
+    def __init__(self, items: list[dict[str, Any]], degraded_reason: str | None = None) -> None:
+        super().__init__(items)
+        self.degraded_reason = degraded_reason
+
+
 def hybrid_search_chunks(
     query: str,
     topic: str | None = None,
@@ -524,6 +542,9 @@ def hybrid_search_chunks(
     settings = settings or Settings()
     storage = storage or Storage(settings.db_path)
 
+    degraded_reason = None
+    query_vector = []
+
     # 1. Generate query embedding
     from knowcran.embeddings import EmbeddingProvider, bytes_to_vector
     provider = EmbeddingProvider(settings)
@@ -531,7 +552,20 @@ def hybrid_search_chunks(
         query_vector = provider.embed_texts([query])[0]
     except Exception as e:
         logger.error(f"Failed to generate query embedding: {e}")
+        degraded_reason = f"Embedding generation failed: {e}"
         query_vector = []
+
+    if query_vector:
+        # Check if database has any chunk embeddings stored
+        try:
+            count = storage.conn.execute(
+                "SELECT count(*) FROM chunk_embeddings WHERE embedding_model = ?",
+                (provider.model,)
+            ).fetchone()[0]
+            if count == 0:
+                degraded_reason = f"No chunk embeddings found in database for model {provider.model}. Search degraded to FTS5."
+        except Exception as e:
+            degraded_reason = f"Failed to check chunk embeddings count: {e}"
 
     # 2. FTS5 BM25 search
     fts_results = storage.search_fulltext(query, topic=topic, paper_id=paper_id, limit=limit * 5)
@@ -577,10 +611,13 @@ def hybrid_search_chunks(
         emb_bytes = chunk_dict.pop("embedding")
         chunk_vector = bytes_to_vector(emb_bytes)
 
-        if len(query_vector) == len(chunk_vector) and any(chunk_vector):
-            sim = sum(x * y for x, y in zip(query_vector, chunk_vector))
-        else:
-            sim = 0.0
+        sim = 0.0
+        if len(query_vector) == len(chunk_vector) and len(query_vector) > 0:
+            dot_prod = sum(x * y for x, y in zip(query_vector, chunk_vector))
+            norm_q = sum(x * x for x in query_vector) ** 0.5
+            norm_c = sum(x * x for x in chunk_vector) ** 0.5
+            if norm_q > 0.0 and norm_c > 0.0:
+                sim = dot_prod / (norm_q * norm_c)
 
         chunk_dict["similarity_score"] = sim
         vector_candidates.append(chunk_dict)
@@ -624,4 +661,11 @@ def hybrid_search_chunks(
         merged_results.append(chunk_data)
 
     merged_results.sort(key=lambda x: x["hybrid_score"], reverse=True)
-    return merged_results[:limit]
+
+    # Note on Performance Boundaries:
+    # This vector search is performed in-memory on CPU using SQLite serialized BLOBs.
+    # It is optimized for local research vaults (typically < 10,000 document chunks).
+    # For large-scale production deployments containing > 50,000 chunks,
+    # we recommend migrating the dense embedding search to a dedicated vector index
+    # like pgvector, ChromaDB, or DuckDB vss.
+    return HybridSearchResult(merged_results[:limit], degraded_reason=degraded_reason)

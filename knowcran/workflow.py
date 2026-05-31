@@ -178,6 +178,7 @@ def run_topic_workflow(
     skip_parse: bool = False,
     skip_review: bool = False,
     fulltext: bool = True,
+    gpu: bool = False,
 ) -> dict[str, Any]:
     """Run the full topic research workflow.
 
@@ -195,6 +196,7 @@ def run_topic_workflow(
         skip_parse: Skip PDF parse step
         skip_review: Skip review generation step
         fulltext: Use full-text extraction when available
+        gpu: Enable GPU acceleration for services
     """
     settings = settings or Settings()
     storage = storage or Storage(settings.db_path)
@@ -210,6 +212,15 @@ def run_topic_workflow(
         "status": "running",
         "steps": {},
     }
+
+    # Automatically ensure local background services are running
+    from knowcran.services.manager import ensure_services, get_services_status
+    try:
+        ensure_services(settings, gpu=gpu)
+        result["steps"]["services"] = get_services_status(settings)
+    except Exception as e:
+        logger.error(f"Failed to ensure local services: {e}")
+        result["steps"]["services"] = {"error": str(e)}
 
     try:
         # Step 1: Get papers (discover if needed)

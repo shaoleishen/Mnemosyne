@@ -83,11 +83,64 @@ Environment variables are read from `.env`:
 | `MNEMOSYNE_PDF_STRATEGY` | `fastest` | Download precedence (e.g., direct OA url first, then index sources). |
 | `MNEMOSYNE_SCIHUB_ENABLED` | `true` | Enable Sci-Hub fallback search for downloaded papers. |
 | `MNEMOSYNE_LIBGEN_ENABLED` | `true` | Enable LibGen fallback search for downloaded papers. |
-| `MNEMOSYNE_PDF_PARSER` | `auto` | PDF parser: `auto` (probes MinerU, falls back to PyMuPDF), `mineru`, or `pymupdf`. |
-| `MINERU_API_URL` | `http://127.0.0.1:8000` | Local or remote MinerU API endpoint url. |
-| `MNEMOSYNE_EMBEDDING_PROVIDER` | `openai` | Embedding provider: `openai` or `none` (degraded/FTS5-only mode). |
-| `MNEMOSYNE_EMBEDDING_MODEL` | `text-embedding-3-large` | Model used for generating semantic chunk vectors. |
+| `MNEMOSYNE_PDF_PARSER` | `auto` | PDF parser: `auto` (probes MinerU health, falls back to PyMuPDF), `mineru`, or `pymupdf`. |
+| `MINERU_API_URL` / `MNEMOSYNE_MINERU_URL` | `http://127.0.0.1:8000` | Local or remote MinerU API endpoint url. |
+| `MNEMOSYNE_MINERU_MODE` | `managed` | MinerU running mode: `managed`, `external`, or `off`. |
+| `MNEMOSYNE_MINERU_BACKEND` | `docker` | Managed MinerU backend: `docker` (WSL2/Linux) or `subprocess`. |
+| `MNEMOSYNE_MINERU_GPU` | `false` | Enable GPU acceleration reservations inside MinerU container. |
+| `MNEMOSYNE_MINERU_WORKERS` | `1` | Max parsing concurrency worker count (prevents VRAM OOM). |
+| `MNEMOSYNE_EMBEDDING_PROVIDER` | `openai` | Embedding provider: `openai`, `local`, or `none` (degraded/FTS5-only mode). |
+| `MNEMOSYNE_EMBEDDING_MODEL` | `text-embedding-3-large` | Model label used for generating semantic chunk vectors. |
 | `MNEMOSYNE_EMBEDDING_API_BASE` | `https://api.openai.com/v1` | Custom API base url for OpenAI-compatible embeddings. |
+| `MNEMOSYNE_LOCAL_EMBEDDING_MODE` | `managed` | Local embeddings mode: `managed` (starts server automatically) or `external`. |
+| `MNEMOSYNE_LOCAL_EMBEDDING_URL` | `http://127.0.0.1:8010/v1` | Endpoint URL for the local embedding server. |
+| `MNEMOSYNE_LOCAL_EMBEDDING_MODEL`| `BAAI/bge-m3` | Model name for local embeddings (e.g. `BAAI/bge-m3`). |
+| `MNEMOSYNE_LOCAL_EMBEDDING_DEVICE`| `cpu` | Device backend for local embeddings: `cpu` or `cuda`. |
+| `MNEMOSYNE_LOCAL_EMBEDDING_BATCH_SIZE`| `16` | Batch size constraint for local vector generation. |
+
+## Local Managed Services (Local Production Mode)
+
+Mnemosyne can automatically manage background dependencies (MinerU and a local OpenAI-compatible embedding server) to achieve a zero-configuration local pipeline.
+
+### Prerequisites
+
+To use local CPU or GPU acceleration, install the `local` packages extra:
+```bash
+pip install -e ".[local]"
+```
+
+If you plan to utilize CUDA GPU acceleration, ensure `torch` with CUDA is installed (e.g., via `pip install torch --index-url https://download.pytorch.org/whl/cu124` for CUDA 12.4).
+
+### Managing Services
+
+Background services are automatically started on pipeline runs (e.g., `knowcran run-topic`), but they can also be controlled manually via the CLI:
+
+```bash
+# Check environment diagnostics and service health
+knowcran doctor
+knowcran doctor --gpu
+
+# Start services (managed Docker compose / Python embedding subprocesses)
+knowcran services start
+knowcran services start --gpu
+
+# Check running processes and container details
+knowcran services status
+
+# Stop all background managed processes
+knowcran services stop
+
+# Tail service execution logs
+knowcran services logs mineru
+knowcran services logs embedding
+```
+
+### Running the Topic Pipeline with GPU
+
+```bash
+knowcran run-topic "intracerebral hemorrhage" --limit 50 --gpu
+```
+The `--gpu` option automatically overrides service devices to CUDA/GPU modes.
 
 ## Sci-Hub & LibGen Compliance Disclaimer
 

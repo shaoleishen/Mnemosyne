@@ -74,13 +74,22 @@ class Settings:
     tor_enabled: bool = field(default_factory=lambda: os.getenv("MNEMOSYNE_TOR_ENABLED", "false").lower() == "true")
     pdf_batch_workers: int = field(default_factory=lambda: int(os.getenv("MNEMOSYNE_PDF_BATCH_WORKERS", "5")))
     pdf_parser: str = field(default_factory=lambda: os.getenv("MNEMOSYNE_PDF_PARSER", "auto"))
-    mineru_api_url: str = field(default_factory=lambda: os.getenv("MINERU_API_URL", "http://127.0.0.1:8000"))
+    mineru_api_url: str = field(default_factory=lambda: os.getenv("MNEMOSYNE_MINERU_URL", os.getenv("MINERU_API_URL", "http://127.0.0.1:8000")))
+    mineru_mode: str = field(default_factory=lambda: os.getenv("MNEMOSYNE_MINERU_MODE", "managed"))
+    mineru_backend: str = field(default_factory=lambda: os.getenv("MNEMOSYNE_MINERU_BACKEND", "docker"))
+    mineru_gpu: bool = field(default_factory=lambda: os.getenv("MNEMOSYNE_MINERU_GPU", "false").lower() == "true")
+    mineru_workers: int = field(default_factory=lambda: int(os.getenv("MNEMOSYNE_MINERU_WORKERS", "1")))
     mineru_return_md: bool = field(default_factory=lambda: os.getenv("MINERU_RETURN_MD", "true").lower() == "true")
     mineru_return_content_list: bool = field(default_factory=lambda: os.getenv("MINERU_RETURN_CONTENT_LIST", "true").lower() == "true")
     openai_api_key: str = field(default_factory=lambda: os.getenv("OPENAI_API_key", os.getenv("OPENAI_API_KEY", "")))
     openai_api_base: str = field(default_factory=lambda: os.getenv("MNEMOSYNE_EMBEDDING_API_BASE", "https://api.openai.com/v1"))
     embedding_provider: str = field(default_factory=lambda: os.getenv("MNEMOSYNE_EMBEDDING_PROVIDER", "openai"))
     embedding_model: str = field(default_factory=lambda: os.getenv("MNEMOSYNE_EMBEDDING_MODEL", "text-embedding-3-large"))
+    local_embedding_mode: str = field(default_factory=lambda: os.getenv("MNEMOSYNE_LOCAL_EMBEDDING_MODE", "managed"))
+    local_embedding_url: str = field(default_factory=lambda: os.getenv("MNEMOSYNE_LOCAL_EMBEDDING_URL", "http://127.0.0.1:8010/v1"))
+    local_embedding_model: str = field(default_factory=lambda: os.getenv("MNEMOSYNE_LOCAL_EMBEDDING_MODEL", "BAAI/bge-m3"))
+    local_embedding_device: str = field(default_factory=lambda: os.getenv("MNEMOSYNE_LOCAL_EMBEDDING_DEVICE", "cpu"))
+    local_embedding_batch_size: int = field(default_factory=lambda: int(os.getenv("MNEMOSYNE_LOCAL_EMBEDDING_BATCH_SIZE", "16")))
 
     @property
     def raw_dir(self) -> Path:

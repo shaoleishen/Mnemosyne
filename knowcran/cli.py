@@ -448,6 +448,7 @@ def llm_doctor(
 def doctor_cmd(
     data_dir: str | None = typer.Option(None, "--data-dir", help="Data directory path"),
     live: bool = typer.Option(False, "--live", help="Run a live health check on remote services"),
+    gpu: bool = typer.Option(False, "--gpu", help="Diagnose GPU and CUDA details"),
 ) -> None:
     """Diagnose the local environment, dependencies, database, and configurations."""
     import sys
@@ -585,14 +586,82 @@ def doctor_cmd(
         console.print("  Internet connectivity probe: [dim]Skipped (run with --live to probe)[/dim]")
     console.print()
 
+    # 7. Local Services Status
+    console.print("[bold]7. Local Managed Services[/bold]")
+    from knowcran.services.manager import get_services_status
+    import shutil
+    try:
+        services_status = get_services_status(settings)
+        for name, info in services_status.items():
+            console.print(f"  {name.title()}:")
+            console.print(f"    Mode: {info.get('mode')}")
+            console.print(f"    Status: {info.get('status')}")
+            console.print(f"    Endpoint URL: {info.get('url')}")
+            if info.get('pid'):
+                console.print(f"    PID: {info.get('pid')}")
+            if name == "embedding":
+                console.print(f"    Model: {info.get('model')}")
+                console.print(f"    Device: {info.get('device')}")
+            elif name == "mineru":
+                console.print(f"    Backend: {info.get('backend')}")
+                console.print(f"    GPU: {info.get('gpu')}")
+    except Exception as e:
+        console.print(f"  Failed to retrieve service status: {e}")
+    console.print()
+
+    # 8. Local GPU Diagnostics
+    if gpu:
+        console.print("[bold cyan]Checking local GPU & CUDA details...[/bold cyan]")
+        import subprocess
+        
+        # Check nvidia-smi
+        try:
+            res = subprocess.run(["nvidia-smi"], capture_output=True, text=True, check=True)
+            console.print("  NVIDIA System Management Interface (nvidia-smi): [green]Active & Responsive[/green]")
+            lines = [l for l in res.stdout.split("\n") if "NVIDIA" in l or "MiB" in l]
+            for l in lines[:3]:
+                console.print(f"    {l.strip()}")
+        except Exception as e:
+            console.print(f"  NVIDIA System Management Interface (nvidia-smi): [red]Failed to run[/red] ({e})")
+
+        # Check torch CUDA
+        try:
+            import torch
+            cuda_avail = torch.cuda.is_available()
+            status_str = "[green]Available[/green]" if cuda_avail else "[red]NOT Available[/red]"
+            console.print(f"  PyTorch CUDA: {status_str}")
+            if cuda_avail:
+                console.print(f"    Device Name: {torch.cuda.get_device_name(0)}")
+                console.print(f"    CUDA Version: {torch.version.cuda}")
+                console.print(f"    Device Count: {torch.cuda.device_count()}")
+        except ImportError:
+            console.print("  PyTorch CUDA: [yellow]PyTorch not installed in this environment[/yellow] (Install with: pip install torch)")
+        except Exception as e:
+            console.print(f"  PyTorch CUDA: [red]Error during check[/red] ({e})")
+
+        # Check docker GPU compatibility
+        try:
+            if shutil.which("docker"):
+                res = subprocess.run(["docker", "run", "--rm", "--gpus", "all", "alpine", "echo", "success"], capture_output=True, text=True, timeout=5)
+                if "success" in res.stdout:
+                    console.print("  Docker NVIDIA Runtime: [green]Available[/green] (Containers have GPU access)")
+                else:
+                    console.print("  Docker NVIDIA Runtime: [red]Failed[/red] (NVIDIA Container Toolkit might not be configured)")
+            else:
+                console.print("  Docker NVIDIA Runtime: [yellow]Docker is not installed[/yellow]")
+        except Exception as e:
+            console.print(f"  Docker NVIDIA Runtime: [red]Not working[/red] ({e})")
+        console.print()
+
 
 @app.command("pdf-doctor")
 def pdf_doctor_cmd(
     data_dir: str | None = typer.Option(None, "--data-dir", help="Data directory path"),
     live: bool = typer.Option(False, "--live", help="Run a live health check on remote services"),
+    gpu: bool = typer.Option(False, "--gpu", help="Diagnose GPU and CUDA details"),
 ) -> None:
     """Diagnose the local environment, dependencies, database, and configurations (doctor alias)."""
-    doctor_cmd(data_dir=data_dir, live=live)
+    doctor_cmd(data_dir=data_dir, live=live, gpu=gpu)
 
 
 agents_app = typer.Typer(name="agents", help="Manage agent providers.")
@@ -765,6 +834,7 @@ def run_topic_cmd(
     skip_download: bool = typer.Option(False, "--skip-download", help="Skip PDF download step"),
     skip_parse: bool = typer.Option(False, "--skip-parse", help="Skip PDF parse step"),
     skip_review: bool = typer.Option(False, "--skip-review", help="Skip review generation step"),
+    gpu: bool = typer.Option(False, "--gpu", help="Enable local GPU acceleration (for MinerU and Local Embedding)"),
     data_dir: str | None = typer.Option(None, "--data-dir", help="Data directory path"),
     vault_dir: str | None = typer.Option(None, "--vault-dir", help="Vault directory path"),
 ) -> None:
@@ -787,6 +857,7 @@ def run_topic_cmd(
         skip_parse=skip_parse,
         skip_review=skip_review,
         fulltext=fulltext,
+        gpu=gpu,
     )
 
     if result["status"] == "completed":
@@ -836,6 +907,168 @@ def serve_mcp_admin_cmd() -> None:
     """Start admin MCP server (local human maintenance only)."""
     from knowcran.server.mcp import serve_mcp_admin
     serve_mcp_admin()
+
+
+@app.command("embedding-server")
+def embedding_server_cmd(
+    host: str = typer.Option("127.0.0.1", help="Host to bind the server to"),
+    port: int = typer.Option(8010, help="Port to bind the server to"),
+    model: str = typer.Option("BAAI/bge-m3", help="Embedding model name"),
+    device: str = typer.Option("cpu", help="Device to run embedding on (cpu/cuda)"),
+):
+    """Start local embedding server (OpenAI-compatible /v1/embeddings)."""
+    import uvicorn
+    import os
+    
+    os.environ["MNEMOSYNE_LOCAL_EMBEDDING_MODEL"] = model
+    os.environ["MNEMOSYNE_LOCAL_EMBEDDING_DEVICE"] = device
+    
+    uvicorn.run("knowcran.services.embedding:app", host=host, port=port, log_level="info")
+
+
+@app.command("search-fulltext-hybrid")
+def search_fulltext_hybrid_cmd(
+    query: str = typer.Argument(help="Search query"),
+    topic: str | None = typer.Option(None, help="Scope to topic"),
+    paper_id: str | None = typer.Option(None, help="Scope to paper"),
+    limit: int = typer.Option(20, help="Max results"),
+    data_dir: str | None = typer.Option(None, "--data-dir", help="Data directory path"),
+) -> None:
+    """Search fulltext chunks using FTS5 keywords and dense vector similarity."""
+    settings = _settings(data_dir, None)
+    from knowcran.fulltext import hybrid_search_chunks
+    from knowcran.storage import Storage
+    storage = Storage(db_path=settings.db_path)
+    try:
+        results = hybrid_search_chunks(query, topic=topic, paper_id=paper_id, limit=limit, storage=storage, settings=settings)
+        
+        # Display degraded reason if hybrid search degraded
+        if hasattr(results, "degraded_reason") and results.degraded_reason:
+            console.print(f"[yellow]Warning: Hybrid search degraded. Reason: {results.degraded_reason}[/yellow]\n")
+            
+        if not results:
+            console.print("[yellow]No results found.[/yellow]")
+            return
+            
+        for idx, r in enumerate(results):
+            title = r.get("title", "N/A")
+            year = r.get("year", "")
+            section = r.get("section", "")
+            page_range = f"p.{r.get('page_start', '?')}-{r.get('page_end', '?')}"
+            
+            console.print(
+                f"[bold]{idx+1}. {title}[/bold] ({year}) {section} {page_range} "
+                f"[dim](Hybrid score: {r.get('hybrid_score', 0.0):.4f}, "
+                f"Similarity: {r.get('similarity_score', 0.0):.4f}, "
+                f"FTS rank: {r.get('fts_rank', 'N/A')}, "
+                f"Vector rank: {r.get('vector_rank', 'N/A')})[/dim]"
+            )
+            text = r.get("text", "")[:240]
+            console.print(f"  {text}...")
+            console.print()
+    finally:
+        storage.close()
+
+
+services_app = typer.Typer(name="services", help="Manage background services (MinerU & local embedding).")
+app.add_typer(services_app, name="services")
+
+
+@services_app.command("start")
+def services_start(
+    gpu: bool = typer.Option(False, "--gpu", help="Enable GPU acceleration"),
+    data_dir: str | None = typer.Option(None, "--data-dir", help="Data directory path"),
+):
+    """Start all local managed background services."""
+    settings = _settings(data_dir, None)
+    from knowcran.services.manager import start_services, get_services_status
+    console.print("[bold]Starting local managed services...[/bold]")
+    try:
+        start_services(settings, gpu=gpu)
+        console.print("[green]Services started successfully.[/green]")
+        status = get_services_status(settings)
+        for name, info in status.items():
+            console.print(f"  {name.title()}: [bold green]{info['status']}[/bold green] (url: {info['url']})")
+    except Exception as e:
+        console.print(f"[red]Error starting services: {e}[/red]")
+        raise typer.Exit(1)
+
+
+@services_app.command("stop")
+def services_stop(
+    data_dir: str | None = typer.Option(None, "--data-dir", help="Data directory path"),
+):
+    """Stop all local managed background services."""
+    settings = _settings(data_dir, None)
+    from knowcran.services.manager import stop_services
+    console.print("[bold]Stopping local managed services...[/bold]")
+    try:
+        stop_services(settings)
+        console.print("[green]Services stopped successfully.[/green]")
+    except Exception as e:
+        console.print(f"[red]Error stopping services: {e}[/red]")
+        raise typer.Exit(1)
+
+
+@services_app.command("status")
+def services_status_cmd(
+    data_dir: str | None = typer.Option(None, "--data-dir", help="Data directory path"),
+):
+    """Show status of local background services."""
+    settings = _settings(data_dir, None)
+    from knowcran.services.manager import get_services_status
+    try:
+        status = get_services_status(settings)
+        table = Table(title="Local Services Status")
+        table.add_column("Service", style="bold")
+        table.add_column("Status")
+        table.add_column("URL")
+        table.add_column("Mode/Backend")
+        table.add_column("Details")
+        
+        for name, info in status.items():
+            status_color = "green" if info["status"] == "running" else ("yellow" if info["status"] == "starting" else "red")
+            status_str = f"[{status_color}]{info['status']}[/{status_color}]"
+            
+            if name == "embedding":
+                mode = f"local ({info['mode']})" if settings.embedding_provider == "local" else "openai/none"
+                details = f"model: {info['model']}, device: {info['device']}"
+            else:
+                mode = f"mineru ({info['mode']}/{info['backend']})"
+                details = f"gpu: {info['gpu']}"
+                
+            table.add_row(name.title(), status_str, info["url"], mode, details)
+        console.print(table)
+    except Exception as e:
+        console.print(f"[red]Error checking status: {e}[/red]")
+        raise typer.Exit(1)
+
+
+@services_app.command("logs")
+def services_logs(
+    service: str = typer.Argument(..., help="Service name (mineru or embedding)"),
+    lines: int = typer.Option(50, "--lines", "-n", help="Number of trailing lines to print"),
+    data_dir: str | None = typer.Option(None, "--data-dir", help="Data directory path"),
+):
+    """Print the logs for a local background service."""
+    settings = _settings(data_dir, None)
+    service = service.lower()
+    if service not in ("mineru", "embedding"):
+        console.print("[red]Invalid service name. Must be 'mineru' or 'embedding'.[/red]")
+        raise typer.Exit(1)
+        
+    log_file = settings.data_dir / "runtime" / "logs" / f"{service}.log"
+    if not log_file.exists():
+        console.print(f"[yellow]No log file found at {log_file}[/yellow]")
+        return
+        
+    console.print(f"[bold cyan]Log file: {log_file} (showing last {lines} lines):[/bold cyan]\n")
+    try:
+        content = log_file.read_text(encoding="utf-8").splitlines()
+        for l in content[-lines:]:
+            console.print(l)
+    except Exception as e:
+        console.print(f"[red]Failed to read logs: {e}[/red]")
 
 
 def main() -> None:

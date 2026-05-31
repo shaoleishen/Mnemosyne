@@ -22,10 +22,16 @@ def bytes_to_vector(data: bytes) -> list[float]:
 class EmbeddingProvider:
     def __init__(self, settings: Settings | None = None):
         self.settings = settings or Settings()
-        self.api_key = self.settings.openai_api_key
-        self.api_base = self.settings.openai_api_base.rstrip("/")
-        self.model = self.settings.embedding_model
         self.provider = self.settings.embedding_provider
+        
+        if self.provider == "local":
+            self.api_base = self.settings.local_embedding_url.rstrip("/")
+            self.model = self.settings.local_embedding_model
+            self.api_key = "local"  # Dummy key to bypass API key checks
+        else:
+            self.api_key = self.settings.openai_api_key
+            self.api_base = self.settings.openai_api_base.rstrip("/")
+            self.model = self.settings.embedding_model
 
     def embed_texts(self, texts: list[str]) -> list[list[float]]:
         """Generate embeddings for a list of strings."""

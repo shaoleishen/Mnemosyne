@@ -309,16 +309,23 @@ def parse_paper_pdf(
 
     # Choose parser based on settings
     parser_type = settings.pdf_parser
+    degraded_reason = None
     if parser_type == "auto":
-        import httpx
-        try:
-            # Quick probe to check if MinerU service is active
-            httpx.get(settings.mineru_api_url, timeout=1.0)
+        from knowcran.services.manager import probe_health
+        if probe_health(settings.mineru_api_url):
             logger.info("MinerU API is responsive. Selecting 'mineru' parser under 'auto' strategy.")
             parser_type = "mineru"
-        except Exception:
+        else:
             logger.info("MinerU API is not responsive. Selecting 'pymupdf' parser under 'auto' strategy.")
             parser_type = "pymupdf"
+            degraded_reason = "MinerU service is offline or unresponsive."
+            try:
+                storage.update_paper_asset(
+                    downloaded["asset_id"],
+                    error=f"Auto-selected PyMuPDF because MinerU API is offline."
+                )
+            except Exception as e:
+                logger.warning(f"Failed to update asset with degraded reason: {e}")
 
     parser = MinerUParser(api_url=settings.mineru_api_url) if parser_type == "mineru" else PyMuPDFParser()
 

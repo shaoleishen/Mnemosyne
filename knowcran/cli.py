@@ -201,6 +201,142 @@ def review(
     console.print(f"[green]Review generated with {len(output.evidence_matrix)} evidence items and {len(output.paper_ids)} papers.[/green]")
 
 
+@app.command("download-paper")
+def download_paper_cmd(
+    paper_id: str = typer.Argument(help="Paper ID to download PDF for"),
+    strategy: str = typer.Option("fastest", help="Download strategy: fastest, oa_first, legal_only, scihub_only"),
+    force: bool = typer.Option(False, "--force", help="Force re-download even if cached"),
+    data_dir: str | None = typer.Option(None, "--data-dir", help="Data directory path"),
+) -> None:
+    """Download a PDF for a single paper."""
+    settings = _settings(data_dir, None)
+    from knowcran.fulltext import download_paper_pdf
+    from knowcran.storage import Storage
+    storage = Storage(db_path=settings.db_path)
+    try:
+        result = download_paper_pdf(paper_id, strategy=strategy, storage=storage, settings=settings, force=force)
+        if result.get("success"):
+            console.print(f"[green]Downloaded: {result.get('source')} -> {result.get('file')}[/green]")
+        else:
+            console.print(f"[red]Failed: {result.get('error')}[/red]")
+    finally:
+        storage.close()
+
+
+@app.command("download-topic")
+def download_topic_cmd(
+    topic: str = typer.Argument(help="Topic to download PDFs for"),
+    limit: int = typer.Option(20, help="Max papers to process"),
+    strategy: str = typer.Option("fastest", help="Download strategy: fastest, oa_first, legal_only, scihub_only"),
+    data_dir: str | None = typer.Option(None, "--data-dir", help="Data directory path"),
+) -> None:
+    """Download PDFs for all papers in a topic."""
+    settings = _settings(data_dir, None)
+    from knowcran.fulltext import download_topic_pdfs
+    from knowcran.storage import Storage
+    storage = Storage(db_path=settings.db_path)
+    try:
+        result = download_topic_pdfs(topic, limit=limit, strategy=strategy, storage=storage, settings=settings)
+        console.print(f"[green]Downloaded: {result['downloaded']}, Skipped: {result['skipped']}, Failed: {result['failed']}[/green]")
+    finally:
+        storage.close()
+
+
+@app.command("pdf-status")
+def pdf_status_cmd(
+    topic: str | None = typer.Argument(None, help="Topic to check PDF status for"),
+    paper_id: str | None = typer.Option(None, help="Specific paper ID"),
+    data_dir: str | None = typer.Option(None, "--data-dir", help="Data directory path"),
+) -> None:
+    """Show PDF download status."""
+    settings = _settings(data_dir, None)
+    from knowcran.fulltext import get_pdf_status
+    from knowcran.storage import Storage
+    storage = Storage(db_path=settings.db_path)
+    try:
+        status = get_pdf_status(topic=topic, paper_id=paper_id, storage=storage, settings=settings)
+        if paper_id:
+            console.print(f"[bold]Paper:[/bold] {status.get('title', 'N/A')}")
+            console.print(f"[bold]Has PDF:[/bold] {status.get('has_pdf', False)}")
+            for asset in status.get("assets", []):
+                console.print(f"  {asset['status']}: {asset.get('source', 'N/A')} - {asset.get('file_path', 'N/A')}")
+        else:
+            console.print(f"[bold]Total:[/bold] {status.get('total', 0)}")
+            for s, count in status.get("by_status", {}).items():
+                console.print(f"  {s}: {count}")
+    finally:
+        storage.close()
+
+
+@app.command("parse-paper")
+def parse_paper_cmd(
+    paper_id: str = typer.Argument(help="Paper ID to parse PDF for"),
+    data_dir: str | None = typer.Option(None, "--data-dir", help="Data directory path"),
+) -> None:
+    """Parse a downloaded PDF into text chunks."""
+    settings = _settings(data_dir, None)
+    from knowcran.fulltext import parse_paper_pdf
+    from knowcran.storage import Storage
+    storage = Storage(db_path=settings.db_path)
+    try:
+        result = parse_paper_pdf(paper_id, storage=storage, settings=settings)
+        if result.get("success"):
+            console.print(f"[green]Parsed: {result.get('chunk_count')} chunks from {result.get('total_pages')} pages[/green]")
+        else:
+            console.print(f"[red]Failed: {result.get('error')}[/red]")
+    finally:
+        storage.close()
+
+
+@app.command("parse-topic")
+def parse_topic_cmd(
+    topic: str = typer.Argument(help="Topic to parse PDFs for"),
+    limit: int = typer.Option(20, help="Max papers to process"),
+    data_dir: str | None = typer.Option(None, "--data-dir", help="Data directory path"),
+) -> None:
+    """Parse all downloaded PDFs for a topic."""
+    settings = _settings(data_dir, None)
+    from knowcran.fulltext import parse_topic_pdfs
+    from knowcran.storage import Storage
+    storage = Storage(db_path=settings.db_path)
+    try:
+        result = parse_topic_pdfs(topic, limit=limit, storage=storage, settings=settings)
+        console.print(f"[green]Parsed: {result['parsed']}, Skipped: {result['skipped']}, Failed: {result['failed']}[/green]")
+    finally:
+        storage.close()
+
+
+@app.command("search-fulltext")
+def search_fulltext_cmd(
+    query: str = typer.Argument(help="Search query"),
+    topic: str | None = typer.Option(None, help="Scope to topic"),
+    paper_id: str | None = typer.Option(None, help="Scope to paper"),
+    limit: int = typer.Option(20, help="Max results"),
+    data_dir: str | None = typer.Option(None, "--data-dir", help="Data directory path"),
+) -> None:
+    """Search fulltext chunks using FTS5."""
+    settings = _settings(data_dir, None)
+    from knowcran.fulltext import search_fulltext
+    from knowcran.storage import Storage
+    storage = Storage(db_path=settings.db_path)
+    try:
+        results = search_fulltext(query, topic=topic, paper_id=paper_id, limit=limit, storage=storage, settings=settings)
+        if not results:
+            console.print("[yellow]No results found.[/yellow]")
+            return
+        for r in results:
+            title = r.get("title", "N/A")
+            year = r.get("year", "")
+            section = r.get("section", "")
+            page_range = f"p.{r.get('page_start', '?')}-{r.get('page_end', '?')}"
+            console.print(f"[bold]{title}[/bold] ({year}) {section} {page_range}")
+            text = r.get("text", "")[:200]
+            console.print(f"  {text}...")
+            console.print()
+    finally:
+        storage.close()
+
+
 @app.command("show-paper")
 def show_paper_cmd(
     paper_id: str = typer.Argument(help="Paper ID to display"),
@@ -448,6 +584,73 @@ def topics_list(
             aliases = storage.get_topic_aliases(t)
             table.add_row(t, str(paper_count), ", ".join(aliases) if aliases else "")
         console.print(table)
+    finally:
+        storage.close()
+
+
+@app.command("run-topic")
+def run_topic_cmd(
+    topic: str = typer.Argument(help="Topic for the full pipeline run"),
+    limit: int = typer.Option(50, help="Max papers to process"),
+    strategy: str = typer.Option("fastest", help="Download strategy"),
+    data_dir: str | None = typer.Option(None, "--data-dir", help="Data directory path"),
+    vault_dir: str | None = typer.Option(None, "--vault-dir", help="Vault directory path"),
+) -> None:
+    """Run the full pipeline: discover -> download -> parse -> extract -> notes -> review."""
+    settings = _settings(data_dir, vault_dir)
+    from knowcran.storage import Storage
+    from knowcran.fulltext import download_topic_pdfs, parse_topic_pdfs
+    from knowcran.obsidian import export_obsidian
+    from knowcran.review import review as do_review
+    import uuid
+    from datetime import datetime, timezone
+
+    storage = Storage(db_path=settings.db_path)
+    run_id = str(uuid.uuid4())
+
+    try:
+        canonical_topic = storage.resolve_topic(topic)
+        console.print(f"[bold]Pipeline run {run_id} for topic: {canonical_topic}[/bold]")
+
+        # Step 1: Check existing papers
+        papers = storage.get_topic_papers(canonical_topic, limit=limit)
+        console.print(f"[1/5] Found {len(papers)} papers in database")
+        if not papers:
+            console.print("[yellow]No papers found. Run 'discover' first.[/yellow]")
+            return
+
+        # Step 2: Download PDFs
+        console.print("[2/5] Downloading PDFs...")
+        dl_result = download_topic_pdfs(canonical_topic, limit=limit, strategy=strategy, storage=storage, settings=settings)
+        console.print(f"  Downloaded: {dl_result['downloaded']}, Skipped: {dl_result['skipped']}, Failed: {dl_result['failed']}")
+
+        # Step 3: Parse PDFs
+        console.print("[3/5] Parsing PDFs...")
+        parse_result = parse_topic_pdfs(canonical_topic, limit=limit, storage=storage, settings=settings)
+        console.print(f"  Parsed: {parse_result['parsed']}, Skipped: {parse_result['skipped']}, Failed: {parse_result['failed']}")
+
+        # Step 4: Export Obsidian
+        console.print("[4/5] Exporting Obsidian notes...")
+        counts = export_obsidian(canonical_topic, storage=storage, vault_dir=settings.vault_dir)
+        console.print(f"  Papers: {counts['papers']}, Claims: {counts['claims']}, Topics: {counts['topics']}")
+
+        # Step 5: Generate review
+        console.print("[5/5] Generating literature review...")
+        output = do_review(canonical_topic, max_papers=limit, storage=storage, vault_dir=settings.vault_dir)
+        console.print(f"  Evidence items: {len(output.evidence_matrix)}, Papers: {len(output.paper_ids)}")
+
+        # Record run
+        storage.insert_review_run(
+            run_id=run_id,
+            topic=canonical_topic,
+            status="completed",
+            input_papers_json=str(len(papers)),
+            output_dir=str(settings.vault_dir / "reviews"),
+        )
+        console.print(f"[green]Pipeline complete! Run ID: {run_id}[/green]")
+    except Exception as e:
+        console.print(f"[red]Pipeline failed: {e}[/red]")
+        storage.insert_review_run(run_id=run_id, topic=topic, status="failed")
     finally:
         storage.close()
 

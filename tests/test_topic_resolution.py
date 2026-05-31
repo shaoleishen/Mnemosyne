@@ -146,7 +146,12 @@ class TestFastMCPSchema:
         tools = get_all_tools()
         topic_tools = [t for t in tools if "topic" in t.get("inputSchema", {}).get("properties", {})]
         # topic is optional for these tools
-        optional_topic = {"knowcran_search_papers", "knowcran_stats", "knowcran_read_paper"}
+        optional_topic = {
+            "knowcran_search_papers", "knowcran_stats", "knowcran_read_paper",
+            "knowcran_search_fulltext", "knowcran_get_pdf_status",
+            "knowcran_get_paper_note", "knowcran_get_evidence_context",
+            "knowcran_read_fulltext",
+        }
         for tool in topic_tools:
             required = tool["inputSchema"].get("required", [])
             if tool["name"] not in optional_topic:
@@ -157,11 +162,11 @@ class TestFastMCPSchema:
         from knowcran.server.mcp import _create_readonly_server
         server = _create_readonly_server()
         tools = server._tool_manager.list_tools()
-        assert len(tools) == 7  # 6 read + 1 audit
+        assert len(tools) == 12  # 6 read + 1 audit + 5 fulltext read
 
     def test_curate_server_creates_successfully(self):
         """Curate server should create without errors."""
         from knowcran.server.mcp import _create_curate_server
         server = _create_curate_server()
         tools = server._tool_manager.list_tools()
-        assert len(tools) == 12  # 6 read + 5 write + 1 audit
+        assert len(tools) == 24  # 6 read + 5 write + 1 audit + 5 fulltext read + 7 fulltext write

@@ -296,13 +296,272 @@ def get_audit_tools() -> list[dict[str, Any]]:
 
 
 def get_all_tools() -> list[dict[str, Any]]:
-    """Return all MCP tools (read + write + audit)."""
-    return get_read_tools() + get_write_tools() + get_audit_tools()
+    """Return all MCP tools (read + write + audit + fulltext)."""
+    return get_read_tools() + get_write_tools() + get_audit_tools() + get_fulltext_read_tools() + get_fulltext_write_tools()
+
+
+# ---------------------------------------------------------------------------
+# Fulltext tool definitions
+# ---------------------------------------------------------------------------
+
+def get_fulltext_read_tools() -> list[dict[str, Any]]:
+    """Return read-only fulltext MCP tool definitions."""
+    return [
+        {
+            "name": "knowcran_search_fulltext",
+            "description": "Search fulltext chunks using FTS5. Returns matching text with paper title, year, page range, section, and chunk metadata.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "FTS5 search query"},
+                    "topic": {"type": "string", "description": "Scope to topic (optional)"},
+                    "paper_id": {"type": "string", "description": "Scope to paper (optional)"},
+                    "limit": {"type": "integer", "description": "Max results (default 20)", "default": 20},
+                    "data_dir": {"type": "string", "description": "Data directory path (optional)"},
+                },
+                "required": ["query"],
+            },
+            "annotations": ToolAnnotations(
+                title="Search Fulltext",
+                readOnlyHint=True,
+                destructiveHint=False,
+                idempotentHint=True,
+                openWorldHint=False,
+            ),
+        },
+        {
+            "name": "knowcran_get_pdf_status",
+            "description": "Get PDF download status for a topic or specific paper. Shows download progress, sources, and file paths.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "topic": {"type": "string", "description": "Topic to check status for"},
+                    "paper_id": {"type": "string", "description": "Specific paper ID"},
+                    "data_dir": {"type": "string", "description": "Data directory path (optional)"},
+                },
+            },
+            "annotations": ToolAnnotations(
+                title="Get PDF Status",
+                readOnlyHint=True,
+                destructiveHint=False,
+                idempotentHint=True,
+                openWorldHint=False,
+            ),
+        },
+        {
+            "name": "knowcran_get_paper_note",
+            "description": "Get a structured paper note with sections for metadata, methods, results, limitations, and evidence quotes.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "paper_id": {"type": "string", "description": "Paper ID"},
+                    "data_dir": {"type": "string", "description": "Data directory path (optional)"},
+                },
+                "required": ["paper_id"],
+            },
+            "annotations": ToolAnnotations(
+                title="Get Paper Note",
+                readOnlyHint=True,
+                destructiveHint=False,
+                idempotentHint=True,
+                openWorldHint=False,
+            ),
+        },
+        {
+            "name": "knowcran_get_evidence_context",
+            "description": "Get evidence context for a claim including source quote, page range, and chunk text. Use for citation verification.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "claim_id": {"type": "string", "description": "Claim ID to get context for"},
+                    "data_dir": {"type": "string", "description": "Data directory path (optional)"},
+                },
+                "required": ["claim_id"],
+            },
+            "annotations": ToolAnnotations(
+                title="Get Evidence Context",
+                readOnlyHint=True,
+                destructiveHint=False,
+                idempotentHint=True,
+                openWorldHint=False,
+            ),
+        },
+        {
+            "name": "knowcran_get_review_artifacts",
+            "description": "Get review artifacts (review markdown, evidence matrix CSV, bibliography, open questions) for a topic.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "topic": {"type": "string", "description": "Topic name"},
+                    "data_dir": {"type": "string", "description": "Data directory path (optional)"},
+                    "vault_dir": {"type": "string", "description": "Vault directory path (optional)"},
+                },
+                "required": ["topic"],
+            },
+            "annotations": ToolAnnotations(
+                title="Get Review Artifacts",
+                readOnlyHint=True,
+                destructiveHint=False,
+                idempotentHint=True,
+                openWorldHint=False,
+            ),
+        },
+    ]
+
+
+def get_fulltext_write_tools() -> list[dict[str, Any]]:
+    """Return curate/write fulltext MCP tool definitions."""
+    return [
+        {
+            "name": "knowcran_download_paper_pdf",
+            "description": "Download a PDF for a single paper. Tries DOI, arXiv ID, and open access sources. Returns download result with source and file path.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "paper_id": {"type": "string", "description": "Paper ID to download PDF for"},
+                    "strategy": {"type": "string", "enum": ["fastest", "oa_first", "legal_only", "scihub_only"], "default": "fastest", "description": "Download strategy"},
+                    "force": {"type": "boolean", "default": False, "description": "Force re-download even if cached"},
+                    "data_dir": {"type": "string", "description": "Data directory path (optional)"},
+                },
+                "required": ["paper_id"],
+            },
+            "annotations": ToolAnnotations(
+                title="Download Paper PDF",
+                readOnlyHint=False,
+                destructiveHint=False,
+                idempotentHint=True,
+                openWorldHint=True,
+            ),
+        },
+        {
+            "name": "knowcran_download_topic_pdfs",
+            "description": "Download PDFs for all papers in a topic. Returns summary of download results.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "topic": {"type": "string", "description": "Topic to download PDFs for"},
+                    "limit": {"type": "integer", "description": "Max papers (default 20)", "default": 20},
+                    "strategy": {"type": "string", "enum": ["fastest", "oa_first", "legal_only", "scihub_only"], "default": "fastest"},
+                    "data_dir": {"type": "string", "description": "Data directory path (optional)"},
+                },
+                "required": ["topic"],
+            },
+            "annotations": ToolAnnotations(
+                title="Download Topic PDFs",
+                readOnlyHint=False,
+                destructiveHint=False,
+                idempotentHint=True,
+                openWorldHint=True,
+            ),
+        },
+        {
+            "name": "knowcran_parse_paper_pdf",
+            "description": "Parse a downloaded PDF into page-aware text chunks. Returns chunk count and status.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "paper_id": {"type": "string", "description": "Paper ID to parse PDF for"},
+                    "data_dir": {"type": "string", "description": "Data directory path (optional)"},
+                },
+                "required": ["paper_id"],
+            },
+            "annotations": ToolAnnotations(
+                title="Parse Paper PDF",
+                readOnlyHint=False,
+                destructiveHint=False,
+                idempotentHint=True,
+                openWorldHint=False,
+            ),
+        },
+        {
+            "name": "knowcran_parse_topic_pdfs",
+            "description": "Parse all downloaded PDFs for a topic. Returns summary of parse results.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "topic": {"type": "string", "description": "Topic to parse PDFs for"},
+                    "limit": {"type": "integer", "description": "Max papers (default 20)", "default": 20},
+                    "data_dir": {"type": "string", "description": "Data directory path (optional)"},
+                },
+                "required": ["topic"],
+            },
+            "annotations": ToolAnnotations(
+                title="Parse Topic PDFs",
+                readOnlyHint=False,
+                destructiveHint=False,
+                idempotentHint=True,
+                openWorldHint=False,
+            ),
+        },
+        {
+            "name": "knowcran_read_fulltext",
+            "description": "Extract claims from a paper's full text (PDF chunks). Falls back to abstract if no PDF.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "paper_id": {"type": "string", "description": "Paper ID"},
+                    "topic": {"type": "string", "description": "Topic to tag claims with"},
+                    "data_dir": {"type": "string", "description": "Data directory path (optional)"},
+                },
+                "required": ["paper_id"],
+            },
+            "annotations": ToolAnnotations(
+                title="Read Fulltext Claims",
+                readOnlyHint=False,
+                destructiveHint=False,
+                idempotentHint=False,
+                openWorldHint=False,
+            ),
+        },
+        {
+            "name": "knowcran_review_fulltext",
+            "description": "Generate a literature review prioritizing full-text claims. Includes evidence status and source quotes.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "topic": {"type": "string", "description": "Topic to review"},
+                    "max_papers": {"type": "integer", "description": "Max papers (default 30)", "default": 30},
+                    "data_dir": {"type": "string", "description": "Data directory path (optional)"},
+                    "vault_dir": {"type": "string", "description": "Vault directory path (optional)"},
+                },
+                "required": ["topic"],
+            },
+            "annotations": ToolAnnotations(
+                title="Review Fulltext",
+                readOnlyHint=False,
+                destructiveHint=False,
+                idempotentHint=True,
+                openWorldHint=False,
+            ),
+        },
+        {
+            "name": "knowcran_run_topic",
+            "description": "Run the full pipeline: discover -> download -> parse -> extract -> notes -> review. Returns structured output directory.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "topic": {"type": "string", "description": "Topic for the pipeline run"},
+                    "limit": {"type": "integer", "description": "Max papers (default 50)", "default": 50},
+                    "strategy": {"type": "string", "enum": ["fastest", "oa_first", "legal_only", "scihub_only"], "default": "fastest"},
+                    "data_dir": {"type": "string", "description": "Data directory path (optional)"},
+                    "vault_dir": {"type": "string", "description": "Vault directory path (optional)"},
+                },
+                "required": ["topic"],
+            },
+            "annotations": ToolAnnotations(
+                title="Run Topic Pipeline",
+                readOnlyHint=False,
+                destructiveHint=False,
+                idempotentHint=False,
+                openWorldHint=True,
+            ),
+        },
+    ]
 
 
 def get_read_only_tools() -> list[dict[str, Any]]:
-    """Return only read-only tools (read + audit, no write)."""
-    return get_read_tools() + get_audit_tools()
+    """Return only read-only tools (read + audit + fulltext read, no write)."""
+    return get_read_tools() + get_audit_tools() + get_fulltext_read_tools()
 
 
 def get_admin_tools() -> list[dict[str, Any]]:

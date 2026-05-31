@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "knowcran"
-version = "1.0.0"
+version = "1.1.0"
 description = "Production-ready local scientific evidence knowledge base and MCP server"
 readme = "README.md"
 license = "Apache-2.0"
@@ -12,7 +12,6 @@ requires-python = ">=3.12"
 classifiers = [
     "Development Status :: 5 - Production/Stable",
     "Intended Audience :: Science/Research",
-    "License :: OSI Approved :: Apache Software License",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
@@ -26,6 +25,9 @@ dependencies = [
     "rich>=13.0",
     "python-dotenv>=1.0",
     "mcp>=1.12",
+    "requests>=2.31",
+    "beautifulsoup4>=4.12",
+    "pymupdf>=1.24",
 ]
 
 [project.optional-dependencies]

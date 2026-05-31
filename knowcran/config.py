@@ -65,6 +65,15 @@ class Settings:
     claw_max_retries: int = field(default_factory=lambda: int(os.getenv("MNEMOSYNE_CLAW_MAX_RETRIES", "2")))
     llm_cache_dir: Path = field(default_factory=lambda: Path(os.getenv("MNEMOSYNE_LLM_CACHE_DIR", "data/raw/llm")))
 
+    # PDF download and parsing settings
+    pdf_download_enabled: bool = field(default_factory=lambda: os.getenv("MNEMOSYNE_PDF_DOWNLOAD_ENABLED", "true").lower() == "true")
+    pdf_dir: Path = field(default_factory=lambda: Path(os.getenv("MNEMOSYNE_PDF_DIR", "data/pdfs")))
+    pdf_strategy: str = field(default_factory=lambda: os.getenv("MNEMOSYNE_PDF_STRATEGY", "fastest"))
+    scihub_enabled: bool = field(default_factory=lambda: os.getenv("MNEMOSYNE_SCIHUB_ENABLED", "true").lower() == "true")
+    libgen_enabled: bool = field(default_factory=lambda: os.getenv("MNEMOSYNE_LIBGEN_ENABLED", "true").lower() == "true")
+    tor_enabled: bool = field(default_factory=lambda: os.getenv("MNEMOSYNE_TOR_ENABLED", "false").lower() == "true")
+    pdf_batch_workers: int = field(default_factory=lambda: int(os.getenv("MNEMOSYNE_PDF_BATCH_WORKERS", "5")))
+
     @property
     def raw_dir(self) -> Path:
         return self.data_dir / "raw" / "semantic_scholar"
@@ -72,6 +81,11 @@ class Settings:
     @property
     def db_path(self) -> Path:
         return self.data_dir / "knowcran.sqlite"
+
+    def ensure_pdf_dir(self) -> Path:
+        """Create and return the PDF directory."""
+        self.pdf_dir.mkdir(parents=True, exist_ok=True)
+        return self.pdf_dir
 
     @classmethod
     def from_env(cls) -> Settings:

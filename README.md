@@ -1,34 +1,37 @@
 # Mnemosyne / KnowCran
 
-**Status: 1.0.0 production release candidate**
+**Status: 1.1.0 PDF Knowledge Base release**
 
-Mnemosyne, packaged as `knowcran`, is a local scientific evidence knowledge base for literature discovery, traceable claim extraction, evidence matrices, review drafting, Obsidian export, and MCP access from agent clients such as Codex, Claude Code, and Claude Desktop.
+Mnemosyne, packaged as `knowcran`, is a local scientific evidence knowledge base for literature discovery, PDF downloading, full-text parsing, traceable claim extraction, evidence matrices, review drafting, Obsidian export, and MCP access from agent clients such as Codex, Claude Code, and Claude Desktop.
 
 The project is designed for local-first research workflows. It stores paper metadata, claims, citations, runs, and generated artifacts in SQLite and plain files. Semantic Scholar is the primary discovery source. LLM/agent extraction is optional; deterministic extraction remains the default fallback.
 
-## What 1.0.0 Means
+## What 1.1.0 Adds
 
-Version 1.0.0 is the first production-baseline release. It does not mean cloud multi-tenancy, full-text PDF ingestion, or polished academic prose generation. It does mean:
+Version 1.1.0 adds full PDF knowledge base capabilities:
 
-- repeatable local install and test workflow
-- explicit Apache-2.0 license
-- stable CLI entry points: `knowcran` and `mnemosyne`
-- readonly, curate, and admin MCP profiles
-- evidence traceability through `paper_id`, `claim_id`, `citation_key`, `source_quote`, and `evidence_status`
-- SQLite migrations for existing local databases
-- cached, rate-limited Semantic Scholar access with retry behavior
-- CI-ready unit, integration, MCP, and packaging checks
+- PDF downloading from 12 sources (arXiv, Unpaywall, OpenAlex, Semantic Scholar, EuropePMC, PMC, CORE, DOAJ, Crossref, Publishers, LibGen, Sci-Hub)
+- PDF parsing into page-aware text chunks with section detection
+- Full-text claim extraction with provenance (page, section, chunk, source span)
+- SQLite FTS5 full-text search across all parsed PDFs
+- Structured paper notes linked to claims and chunks
+- Robin-style structured output directories for topic runs
+- Literature reviews that prioritize full-text evidence over abstracts
 
 ## Features
 
 | Area | Capability |
 | --- | --- |
 | Discovery | Search Semantic Scholar, cache raw responses, deduplicate papers, and store topic membership. |
-| Reading | Extract claims from abstracts with deterministic fallback and optional agent/LLM providers. |
+| PDF Download | Download PDFs from 12 sources with multi-source racing and caching. |
+| PDF Parse | Extract page-aware text chunks with section detection using PyMuPDF. |
+| Reading | Extract claims from abstracts or full text with deterministic fallback and optional agent/LLM providers. |
+| Full-text Search | Search parsed PDFs using SQLite FTS5 with topic and paper scoping. |
 | Evidence | Build evidence matrices with citation keys, source quotes, evidence status, and coverage summaries. |
-| Review | Generate evidence digests and review drafts from stored claims. |
+| Review | Generate evidence digests and review drafts from stored claims, prioritizing full-text evidence. |
+| Notes | Generate structured paper notes with sections for metadata, methods, results, and limitations. |
 | Obsidian | Export papers, claims, topics, reviews, CSV evidence matrices, and BibTeX. |
-| MCP | Serve readonly, curate, and admin MCP profiles for agent clients. |
+| MCP | Serve readonly, curate, and admin MCP profiles with fulltext tools for agent clients. |
 | Audit | Validate citations and detect common overclaim risks in generated answers. |
 
 ## Installation
@@ -48,14 +51,29 @@ Python 3.12 or newer is required.
 # Discover literature.
 knowcran discover "intracerebral hemorrhage" --limit 100
 
-# Extract claims. Use --limit 0 to process all available topic papers.
-knowcran read-topic "intracerebral hemorrhage" --limit 50
+# Download PDFs for a topic.
+knowcran download-topic "intracerebral hemorrhage" --limit 20 --strategy fastest
 
-# Generate a traceable review draft.
-knowcran review "intracerebral hemorrhage" --max-papers 50
+# Parse downloaded PDFs into text chunks.
+knowcran parse-topic "intracerebral hemorrhage" --limit 20
+
+# Extract claims from full text.
+knowcran read-topic "intracerebral hemorrhage" --limit 50 --fulltext
+
+# Search fulltext chunks.
+knowcran search-fulltext "hematoma expansion" --topic "intracerebral hemorrhage"
+
+# Generate a full-text review.
+knowcran review "intracerebral hemorrhage" --max-papers 30 --fulltext
+
+# Run the complete pipeline (discover -> download -> parse -> extract -> review).
+knowcran run-topic "intracerebral hemorrhage" --limit 50
 
 # Export Obsidian notes and review artifacts.
 knowcran export-obsidian "intracerebral hemorrhage"
+
+# Check PDF download status.
+knowcran pdf-status "intracerebral hemorrhage"
 
 # Inspect local database health.
 knowcran stats
@@ -71,6 +89,13 @@ Environment variables are read from `.env`:
 | `KNOWCRAN_DATA_DIR` | `data` | Directory for SQLite database and raw API cache. |
 | `KNOWCRAN_VAULT_DIR` | `vault` | Directory for Obsidian export. |
 | `KNOWCRAN_RATE_LIMIT_SECONDS` | `1.1` | Minimum delay between Semantic Scholar requests. |
+| `MNEMOSYNE_PDF_DOWNLOAD_ENABLED` | `true` | Enable PDF downloading. |
+| `MNEMOSYNE_PDF_DIR` | `data/pdfs` | Directory for storing downloaded PDFs. |
+| `MNEMOSYNE_PDF_STRATEGY` | `fastest` | Download strategy: `fastest`, `oa_first`, `legal_only`, `scihub_only`. |
+| `MNEMOSYNE_SCIHUB_ENABLED` | `true` | Enable Sci-Hub as a source. |
+| `MNEMOSYNE_LIBGEN_ENABLED` | `true` | Enable LibGen as a source. |
+| `MNEMOSYNE_TOR_ENABLED` | `false` | Enable Tor for anonymous downloads. |
+| `MNEMOSYNE_PDF_BATCH_WORKERS` | `5` | Number of parallel batch download workers. |
 | `MNEMOSYNE_LLM_PROVIDER` | `none` | LLM provider: `none` or `claw`. |
 | `MNEMOSYNE_CLAW_BIN` | auto-detect | Optional path to the Claw binary. |
 | `MNEMOSYNE_CLAW_MODEL` | `sonnet` | Model label passed to Claw. |

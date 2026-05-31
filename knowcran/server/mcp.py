@@ -539,6 +539,257 @@ def _handle_dedupe_claims(params: dict[str, Any]) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# Fulltext tool handlers
+# ---------------------------------------------------------------------------
+
+def _handle_search_fulltext(params: dict[str, Any]) -> dict[str, Any]:
+    """Search fulltext chunks using FTS5."""
+    from knowcran.fulltext import search_fulltext as do_search
+    storage = _get_storage(params.get("data_dir"))
+    try:
+        results = do_search(
+            query=params["query"],
+            topic=params.get("topic"),
+            paper_id=params.get("paper_id"),
+            limit=params.get("limit", 20),
+            storage=storage,
+        )
+        return {
+            "results": results,
+            "count": len(results),
+            "query": params["query"],
+        }
+    finally:
+        storage.close()
+
+
+def _handle_get_pdf_status(params: dict[str, Any]) -> dict[str, Any]:
+    """Get PDF download status."""
+    from knowcran.fulltext import get_pdf_status as do_status
+    storage = _get_storage(params.get("data_dir"))
+    try:
+        return do_status(
+            topic=params.get("topic"),
+            paper_id=params.get("paper_id"),
+            storage=storage,
+        )
+    finally:
+        storage.close()
+
+
+def _handle_get_paper_note(params: dict[str, Any]) -> dict[str, Any]:
+    """Get a structured paper note."""
+    from knowcran.notes import generate_paper_note
+    storage = _get_storage(params.get("data_dir"))
+    try:
+        result = generate_paper_note(
+            paper_id=params["paper_id"],
+            storage=storage,
+        )
+        if result.get("success"):
+            notes = storage.get_paper_notes(params["paper_id"])
+            if notes:
+                return {
+                    "success": True,
+                    "note": notes[0],
+                }
+        return result
+    finally:
+        storage.close()
+
+
+def _handle_get_evidence_context(params: dict[str, Any]) -> dict[str, Any]:
+    """Get evidence context for a claim."""
+    storage = _get_storage(params.get("data_dir"))
+    try:
+        claim_id = params["claim_id"]
+        # Search for claim across all topics
+        for topic in storage.get_canonical_topics():
+            claims = storage.get_claims_by_topic(topic)
+            for claim in claims:
+                if claim.get("claim_id") == claim_id:
+                    # Get chunk if available
+                    chunk = None
+                    chunk_id = None
+                    source_span = claim.get("source_span_json")
+                    if source_span:
+                        try:
+                            import json
+                            span = json.loads(source_span) if isinstance(source_span, str) else source_span
+                            chunk_id = span.get("chunk_id")
+                        except (json.JSONDecodeError, TypeError):
+                            pass
+                    if chunk_id:
+                        chunk = storage.get_chunk(chunk_id)
+
+                    return {
+                        "claim": claim,
+                        "chunk": chunk,
+                        "source_quote": claim.get("source_quote"),
+                        "evidence_status": claim.get("evidence_status", "abstract_only"),
+                    }
+        return {"error": f"Claim not found: {claim_id}"}
+    finally:
+        storage.close()
+
+
+def _handle_get_review_artifacts(params: dict[str, Any]) -> dict[str, Any]:
+    """Get review artifacts for a topic."""
+    storage = _get_storage(params.get("data_dir"))
+    try:
+        topic = params["topic"]
+        vault_dir = params.get("vault_dir")
+        vdir = resolve_allowed_vault_dir(vault_dir)
+        from knowcran.utils import slugify
+        slug = slugify(topic)
+        reviews_dir = vdir / "reviews"
+
+        artifacts = {}
+        for name, suffix in [
+            ("review", f"{slug}_review.md"),
+            ("evidence_matrix", f"{slug}_evidence_matrix.csv"),
+            ("bibliography", f"{slug}_bibliography.bib"),
+            ("open_questions", f"{slug}_open_questions.md"),
+        ]:
+            path = reviews_dir / suffix
+            if path.exists():
+                artifacts[name] = path.read_text(encoding="utf-8")
+
+        return {
+            "topic": topic,
+            "artifacts": artifacts,
+            "found": list(artifacts.keys()),
+        }
+    finally:
+        storage.close()
+
+
+def _handle_download_paper_pdf(params: dict[str, Any]) -> dict[str, Any]:
+    """Download a PDF for a single paper."""
+    from knowcran.fulltext import download_paper_pdf
+    storage = _get_storage(params.get("data_dir"))
+    try:
+        return download_paper_pdf(
+            paper_id=params["paper_id"],
+            strategy=params.get("strategy", "fastest"),
+            storage=storage,
+            force=params.get("force", False),
+        )
+    finally:
+        storage.close()
+
+
+def _handle_download_topic_pdfs(params: dict[str, Any]) -> dict[str, Any]:
+    """Download PDFs for all papers in a topic."""
+    from knowcran.fulltext import download_topic_pdfs
+    storage = _get_storage(params.get("data_dir"))
+    try:
+        return download_topic_pdfs(
+            topic=params["topic"],
+            limit=params.get("limit", 20),
+            strategy=params.get("strategy", "fastest"),
+            storage=storage,
+        )
+    finally:
+        storage.close()
+
+
+def _handle_parse_paper_pdf(params: dict[str, Any]) -> dict[str, Any]:
+    """Parse a downloaded PDF into text chunks."""
+    from knowcran.fulltext import parse_paper_pdf
+    storage = _get_storage(params.get("data_dir"))
+    try:
+        return parse_paper_pdf(
+            paper_id=params["paper_id"],
+            storage=storage,
+        )
+    finally:
+        storage.close()
+
+
+def _handle_parse_topic_pdfs(params: dict[str, Any]) -> dict[str, Any]:
+    """Parse all downloaded PDFs for a topic."""
+    from knowcran.fulltext import parse_topic_pdfs
+    storage = _get_storage(params.get("data_dir"))
+    try:
+        return parse_topic_pdfs(
+            topic=params["topic"],
+            limit=params.get("limit", 20),
+            storage=storage,
+        )
+    finally:
+        storage.close()
+
+
+def _handle_read_fulltext(params: dict[str, Any]) -> dict[str, Any]:
+    """Extract claims from a paper's full text."""
+    from knowcran.reading import read_paper
+    storage = _get_storage(params.get("data_dir"))
+    try:
+        claims = read_paper(
+            params["paper_id"],
+            topic=params.get("topic"),
+            storage=storage,
+            fulltext=True,
+        )
+        return {
+            "claims": [
+                {
+                    "claim_id": c.claim_id,
+                    "evidence_type": c.evidence_type,
+                    "claim_text": c.claim_text[:200],
+                    "confidence": c.confidence,
+                    "evidence_status": c.evidence_status,
+                    "source_location": c.source_location,
+                }
+                for c in claims
+            ],
+            "count": len(claims),
+        }
+    finally:
+        storage.close()
+
+
+def _handle_review_fulltext(params: dict[str, Any]) -> dict[str, Any]:
+    """Generate a literature review prioritizing full-text claims."""
+    from knowcran.review import review
+    storage = _get_storage(params.get("data_dir"))
+    try:
+        vault_dir = params.get("vault_dir")
+        vdir = resolve_allowed_vault_dir(vault_dir)
+        output = review(
+            params["topic"],
+            max_papers=params.get("max_papers", 30),
+            storage=storage,
+            vault_dir=vdir,
+            fulltext=True,
+        )
+        return {
+            "topic": output.topic,
+            "paper_count": len(output.paper_ids),
+            "evidence_count": len(output.evidence_matrix),
+            "open_questions": output.open_questions,
+        }
+    finally:
+        storage.close()
+
+
+def _handle_run_topic(params: dict[str, Any]) -> dict[str, Any]:
+    """Run the full topic pipeline."""
+    from knowcran.workflow import run_topic_workflow
+    storage = _get_storage(params.get("data_dir"))
+    try:
+        return run_topic_workflow(
+            topic=params["topic"],
+            limit=params.get("limit", 50),
+            strategy=params.get("strategy", "fastest"),
+            storage=storage,
+        )
+    finally:
+        storage.close()
+
+
+# ---------------------------------------------------------------------------
 # Handler dispatch map
 # ---------------------------------------------------------------------------
 
@@ -557,6 +808,19 @@ _TOOL_HANDLERS = {
     "knowcran_audit_answer": _handle_audit_answer,
     "knowcran_repair_metadata": _handle_repair_metadata,
     "knowcran_dedupe_claims": _handle_dedupe_claims,
+    # Fulltext tools
+    "knowcran_search_fulltext": _handle_search_fulltext,
+    "knowcran_get_pdf_status": _handle_get_pdf_status,
+    "knowcran_get_paper_note": _handle_get_paper_note,
+    "knowcran_get_evidence_context": _handle_get_evidence_context,
+    "knowcran_get_review_artifacts": _handle_get_review_artifacts,
+    "knowcran_download_paper_pdf": _handle_download_paper_pdf,
+    "knowcran_download_topic_pdfs": _handle_download_topic_pdfs,
+    "knowcran_parse_paper_pdf": _handle_parse_paper_pdf,
+    "knowcran_parse_topic_pdfs": _handle_parse_topic_pdfs,
+    "knowcran_read_fulltext": _handle_read_fulltext,
+    "knowcran_review_fulltext": _handle_review_fulltext,
+    "knowcran_run_topic": _handle_run_topic,
 }
 
 # Legacy handler names (backward compat)

@@ -80,6 +80,7 @@ def _clean_abstract_labels(text: str) -> str:
 
 
 def _extract_claims(paper: dict[str, Any], topic: str | None = None) -> list[Claim]:
+    """Extract claims from a paper's abstract (deterministic)."""
     abstract = paper.get("abstract") or ""
     paper_id = paper["paper_id"]
     cleaned = _clean_abstract_labels(abstract)
@@ -198,7 +199,115 @@ def _extract_claims(paper: dict[str, Any], topic: str | None = None) -> list[Cla
     return claims
 
 
-def read_paper(paper_id: str, topic: str | None = None, storage: Storage | None = None) -> list[Claim]:
+def _extract_fulltext_claims(paper: dict[str, Any], chunks: list[dict[str, Any]],
+                              topic: str | None = None) -> list[Claim]:
+    """Extract claims from PDF chunks (full-text mode).
+
+    Processes each chunk to extract methods, results, limitations,
+    and key findings with full provenance (page, section, chunk_id).
+    """
+    paper_id = paper["paper_id"]
+    claims: list[Claim] = []
+
+    for chunk in chunks:
+        chunk_text = chunk.get("text", "")
+        chunk_id = chunk.get("chunk_id", "")
+        page_start = chunk.get("page_start")
+        page_end = chunk.get("page_end")
+        section = chunk.get("section", "")
+
+        if not chunk_text.strip():
+            continue
+
+        sentences = _split_sentences(chunk_text)
+        if not sentences:
+            continue
+
+        # Extract method claims from Methods sections
+        if section and section.lower() in ("methods", "methodology", "experimental"):
+            method_sents = [s for s in sentences if _METHOD_TERMS.search(s)]
+            if method_sents:
+                method_text = " ".join(method_sents[:5])
+                claims.append(Claim(
+                    claim_id=_deterministic_claim_id(paper_id, topic, "method", method_text, f"chunk:{chunk_id}"),
+                    paper_id=paper_id,
+                    claim_text=method_text,
+                    evidence_type="method",
+                    confidence=0.85,
+                    source_location=f"fulltext:{section}:p{page_start}-{page_end}",
+                    topic=topic,
+                    evidence_status="full_text_reviewed",
+                    source_quote=method_text[:500],
+                    source_span_json=f'{{"chunk_id":"{chunk_id}","page_start":{page_start},"page_end":{page_end},"section":"{section}"}}',
+                ))
+
+        # Extract result claims from Results/Discussion sections
+        if section and section.lower() in ("results", "discussion", "findings"):
+            strong_sents = [s for s in sentences if _STRONG_RESULT_TERMS.search(s)]
+            suggestive_sents = [s for s in sentences if _SUGGESTIVE_RESULT_TERMS.search(s)]
+            result_sents = strong_sents + [s for s in suggestive_sents if s not in strong_sents]
+            if result_sents:
+                has_strong = bool(strong_sents)
+                confidence = 0.85 if has_strong else 0.65
+                result_text = " ".join(result_sents[:5])
+                claims.append(Claim(
+                    claim_id=_deterministic_claim_id(paper_id, topic, "result", result_text, f"chunk:{chunk_id}"),
+                    paper_id=paper_id,
+                    claim_text=result_text,
+                    evidence_type="result",
+                    confidence=confidence,
+                    source_location=f"fulltext:{section}:p{page_start}-{page_end}",
+                    topic=topic,
+                    evidence_status="full_text_reviewed",
+                    source_quote=result_text[:500],
+                    source_span_json=f'{{"chunk_id":"{chunk_id}","page_start":{page_start},"page_end":{page_end},"section":"{section}"}}',
+                ))
+
+        # Extract limitation claims
+        if section and section.lower() in ("discussion", "limitations", "conclusion"):
+            limit_sents = [s for s in sentences if _LIMITATION_TERMS.search(s)]
+            if limit_sents:
+                limit_text = " ".join(limit_sents[:3])
+                claims.append(Claim(
+                    claim_id=_deterministic_claim_id(paper_id, topic, "limitation", limit_text, f"chunk:{chunk_id}"),
+                    paper_id=paper_id,
+                    claim_text=limit_text,
+                    evidence_type="limitation",
+                    confidence=0.7,
+                    source_location=f"fulltext:{section}:p{page_start}-{page_end}",
+                    topic=topic,
+                    evidence_status="full_text_reviewed",
+                    source_quote=limit_text[:500],
+                    source_span_json=f'{{"chunk_id":"{chunk_id}","page_start":{page_start},"page_end":{page_end},"section":"{section}"}}',
+                ))
+
+        # Extract key findings from Abstract section
+        if section and section.lower() == "abstract":
+            summary_text = " ".join(sentences[:3])
+            if summary_text:
+                claims.append(Claim(
+                    claim_id=_deterministic_claim_id(paper_id, topic, "abstract_summary", summary_text, f"chunk:{chunk_id}"),
+                    paper_id=paper_id,
+                    claim_text=summary_text,
+                    evidence_type="abstract_summary",
+                    confidence=0.8,
+                    source_location=f"fulltext:abstract:p{page_start}-{page_end}",
+                    topic=topic,
+                    evidence_status="full_text_reviewed",
+                    source_quote=summary_text[:500],
+                    source_span_json=f'{{"chunk_id":"{chunk_id}","page_start":{page_start},"page_end":{page_end},"section":"Abstract"}}',
+                ))
+
+    return claims
+
+
+def read_paper(paper_id: str, topic: str | None = None, storage: Storage | None = None,
+               fulltext: bool = False) -> list[Claim]:
+    """Extract claims from a single paper.
+
+    If fulltext=True and PDF chunks exist, extracts from full text.
+    Otherwise falls back to abstract-only extraction.
+    """
     own = storage is None
     storage = storage or Storage()
     try:
@@ -206,8 +315,19 @@ def read_paper(paper_id: str, topic: str | None = None, storage: Storage | None 
         if not paper:
             return []
         topic = topic or paper.get("title", "")
+
+        # Try fulltext extraction if requested
+        if fulltext and storage.has_chunks(paper_id):
+            chunks = storage.get_chunks_for_paper(paper_id)
+            claims = _extract_fulltext_claims(paper, chunks, topic)
+            for claim in claims:
+                storage.upsert_claim_idempotent(claim, extraction_method="deterministic:fulltext")
+            return claims
+
+        # Fallback to abstract extraction
         claims = _extract_claims(paper, topic)
-        storage.insert_claims(claims)
+        for claim in claims:
+            storage.upsert_claim_idempotent(claim, extraction_method="deterministic")
         return claims
     finally:
         if own:
@@ -216,7 +336,8 @@ def read_paper(paper_id: str, topic: str | None = None, storage: Storage | None 
 
 def read_topic(topic: str, limit: int = 20, storage: Storage | None = None,
                llm_provider: Any | None = None,
-               agent_provider: Any | None = None) -> list[Claim]:
+               agent_provider: Any | None = None,
+               fulltext: bool = False) -> list[Claim]:
     own = storage is None
     storage = storage or Storage()
     try:
@@ -283,9 +404,17 @@ def read_topic(topic: str, limit: int = 20, storage: Storage | None = None,
         else:
             # Deterministic extraction
             for p in papers:
-                claims = _extract_claims(p, topic)
-                for claim in claims:
-                    storage.upsert_claim_idempotent(claim, extraction_method="deterministic")
+                pid = p["paper_id"]
+                # Try fulltext if requested and chunks available
+                if fulltext and storage.has_chunks(pid):
+                    chunks = storage.get_chunks_for_paper(pid)
+                    claims = _extract_fulltext_claims(p, chunks, topic)
+                    for claim in claims:
+                        storage.upsert_claim_idempotent(claim, extraction_method="deterministic:fulltext")
+                else:
+                    claims = _extract_claims(p, topic)
+                    for claim in claims:
+                        storage.upsert_claim_idempotent(claim, extraction_method="deterministic")
                 all_claims.extend(claims)
 
         return all_claims

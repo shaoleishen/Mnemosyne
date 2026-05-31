@@ -147,6 +147,60 @@ CREATE TABLE IF NOT EXISTS agent_runs (
     usage_json TEXT,
     created_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS paper_assets (
+    asset_id TEXT PRIMARY KEY,
+    paper_id TEXT NOT NULL,
+    asset_type TEXT NOT NULL DEFAULT 'pdf',
+    doi TEXT,
+    arxiv_id TEXT,
+    file_path TEXT,
+    source TEXT,
+    strategy TEXT,
+    status TEXT NOT NULL DEFAULT 'pending',
+    error TEXT,
+    sha256 TEXT,
+    size_bytes INTEGER,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS paper_fulltext_chunks (
+    chunk_id TEXT PRIMARY KEY,
+    paper_id TEXT NOT NULL,
+    asset_id TEXT NOT NULL,
+    page_start INTEGER,
+    page_end INTEGER,
+    section TEXT,
+    chunk_index INTEGER,
+    text TEXT NOT NULL,
+    text_hash TEXT,
+    token_count INTEGER,
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS paper_notes (
+    note_id TEXT PRIMARY KEY,
+    paper_id TEXT NOT NULL,
+    topic TEXT,
+    note_type TEXT,
+    title TEXT,
+    body TEXT,
+    linked_claim_ids_json TEXT,
+    linked_chunk_ids_json TEXT,
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS review_runs (
+    run_id TEXT PRIMARY KEY,
+    topic TEXT NOT NULL,
+    input_papers_json TEXT,
+    input_claims_json TEXT,
+    input_chunks_json TEXT,
+    output_dir TEXT,
+    status TEXT NOT NULL DEFAULT 'pending',
+    created_at TEXT NOT NULL
+);
 """
 
 
@@ -219,6 +273,32 @@ def _migrate(conn: sqlite3.Connection) -> None:
 
     # Idempotency index for claims
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_claims_idempotency ON claims(paper_id, topic, evidence_type, claim_hash)")
+
+    # Paper assets indexes
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_paper_assets_paper_id ON paper_assets(paper_id)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_paper_assets_status ON paper_assets(status)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_paper_assets_doi ON paper_assets(doi)")
+
+    # Fulltext chunks indexes
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_fulltext_chunks_paper_id ON paper_fulltext_chunks(paper_id)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_fulltext_chunks_asset_id ON paper_fulltext_chunks(asset_id)")
+
+    # Paper notes indexes
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_paper_notes_paper_id ON paper_notes(paper_id)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_paper_notes_topic ON paper_notes(topic)")
+
+    # Review runs indexes
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_review_runs_topic ON review_runs(topic)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_review_runs_status ON review_runs(status)")
+
+    # FTS5 virtual table for full-text search on chunks
+    cursor.execute("""
+        CREATE VIRTUAL TABLE IF NOT EXISTS paper_chunks_fts USING fts5(
+            chunk_id, paper_id, text, section,
+            content='paper_fulltext_chunks',
+            content_rowid='rowid'
+        )
+    """)
 
     conn.commit()
 
@@ -770,6 +850,312 @@ class Storage:
             coverage["total_queries"] += r[1]
             coverage["total_papers"] += r[2] or 0
         return coverage
+
+    # --- Paper Assets (PDF downloads) ---
+
+    def insert_paper_asset(self, asset_id: str, paper_id: str, asset_type: str = "pdf",
+                           doi: str | None = None, arxiv_id: str | None = None,
+                           file_path: str | None = None, source: str | None = None,
+                           strategy: str | None = None, status: str = "pending",
+                           error: str | None = None, sha256: str | None = None,
+                           size_bytes: int | None = None) -> None:
+        """Insert a paper asset record."""
+        now = datetime.now(timezone.utc).isoformat()
+        self.conn.execute(
+            """INSERT INTO paper_assets (asset_id, paper_id, asset_type, doi, arxiv_id,
+                file_path, source, strategy, status, error, sha256, size_bytes, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (asset_id, paper_id, asset_type, doi, arxiv_id, file_path, source, strategy,
+             status, error, sha256, size_bytes, now, now),
+        )
+        self.conn.commit()
+
+    def update_paper_asset(self, asset_id: str, status: str | None = None,
+                           file_path: str | None = None, error: str | None = None,
+                           sha256: str | None = None, size_bytes: int | None = None,
+                           source: str | None = None) -> None:
+        """Update a paper asset record."""
+        now = datetime.now(timezone.utc).isoformat()
+        updates = ["updated_at = ?"]
+        params: list[Any] = [now]
+        if status is not None:
+            updates.append("status = ?")
+            params.append(status)
+        if file_path is not None:
+            updates.append("file_path = ?")
+            params.append(file_path)
+        if error is not None:
+            updates.append("error = ?")
+            params.append(error)
+        if sha256 is not None:
+            updates.append("sha256 = ?")
+            params.append(sha256)
+        if size_bytes is not None:
+            updates.append("size_bytes = ?")
+            params.append(size_bytes)
+        if source is not None:
+            updates.append("source = ?")
+            params.append(source)
+        params.append(asset_id)
+        self.conn.execute(
+            f"UPDATE paper_assets SET {', '.join(updates)} WHERE asset_id = ?",
+            params,
+        )
+        self.conn.commit()
+
+    def get_paper_asset(self, asset_id: str) -> dict[str, Any] | None:
+        """Get a paper asset by ID."""
+        row = self.conn.execute(
+            "SELECT * FROM paper_assets WHERE asset_id = ?", (asset_id,)
+        ).fetchone()
+        return dict(row) if row else None
+
+    def get_assets_for_paper(self, paper_id: str) -> list[dict[str, Any]]:
+        """Get all assets for a paper."""
+        rows = self.conn.execute(
+            "SELECT * FROM paper_assets WHERE paper_id = ? ORDER BY created_at DESC",
+            (paper_id,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def get_asset_by_doi(self, doi: str) -> dict[str, Any] | None:
+        """Get a successful asset by DOI."""
+        row = self.conn.execute(
+            "SELECT * FROM paper_assets WHERE doi = ? AND status = 'downloaded' ORDER BY created_at DESC LIMIT 1",
+            (doi,),
+        ).fetchone()
+        return dict(row) if row else None
+
+    def get_assets_by_status(self, status: str, limit: int = 100) -> list[dict[str, Any]]:
+        """Get assets by status."""
+        rows = self.conn.execute(
+            "SELECT * FROM paper_assets WHERE status = ? ORDER BY created_at DESC LIMIT ?",
+            (status, limit),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def get_pdf_status_summary(self, topic: str | None = None) -> dict[str, Any]:
+        """Get PDF download status summary, optionally scoped to a topic."""
+        if topic:
+            rows = self.conn.execute(
+                """SELECT a.status, COUNT(*) as cnt
+                FROM paper_assets a
+                INNER JOIN topic_papers tp ON a.paper_id = tp.paper_id
+                WHERE tp.topic = ?
+                GROUP BY a.status""",
+                (topic,),
+            ).fetchall()
+        else:
+            rows = self.conn.execute(
+                "SELECT status, COUNT(*) as cnt FROM paper_assets GROUP BY status"
+            ).fetchall()
+        summary: dict[str, Any] = {"total": 0, "by_status": {}}
+        for r in rows:
+            summary["by_status"][r[0]] = r[1]
+            summary["total"] += r[1]
+        return summary
+
+    # --- Fulltext Chunks ---
+
+    def insert_fulltext_chunk(self, chunk_id: str, paper_id: str, asset_id: str,
+                              text: str, page_start: int | None = None,
+                              page_end: int | None = None, section: str | None = None,
+                              chunk_index: int = 0) -> None:
+        """Insert a fulltext chunk."""
+        now = datetime.now(timezone.utc).isoformat()
+        text_hash = hashlib.sha256(text.encode()).hexdigest()[:16]
+        token_count = len(text.split())
+        self.conn.execute(
+            """INSERT INTO paper_fulltext_chunks
+                (chunk_id, paper_id, asset_id, page_start, page_end, section,
+                 chunk_index, text, text_hash, token_count, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (chunk_id, paper_id, asset_id, page_start, page_end, section,
+             chunk_index, text, text_hash, token_count, now),
+        )
+        self.conn.commit()
+
+    def insert_fulltext_chunks(self, chunks: list[dict[str, Any]]) -> None:
+        """Batch insert fulltext chunks."""
+        now = datetime.now(timezone.utc).isoformat()
+        rows = []
+        for c in chunks:
+            text = c["text"]
+            text_hash = hashlib.sha256(text.encode()).hexdigest()[:16]
+            token_count = len(text.split())
+            rows.append((
+                c["chunk_id"], c["paper_id"], c["asset_id"],
+                c.get("page_start"), c.get("page_end"), c.get("section"),
+                c.get("chunk_index", 0), text, text_hash, token_count, now,
+            ))
+        self.conn.executemany(
+            """INSERT INTO paper_fulltext_chunks
+                (chunk_id, paper_id, asset_id, page_start, page_end, section,
+                 chunk_index, text, text_hash, token_count, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            rows,
+        )
+        self.conn.commit()
+
+    def get_chunks_for_paper(self, paper_id: str) -> list[dict[str, Any]]:
+        """Get all chunks for a paper, ordered by chunk index."""
+        rows = self.conn.execute(
+            "SELECT * FROM paper_fulltext_chunks WHERE paper_id = ? ORDER BY chunk_index",
+            (paper_id,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def get_chunk(self, chunk_id: str) -> dict[str, Any] | None:
+        """Get a chunk by ID."""
+        row = self.conn.execute(
+            "SELECT * FROM paper_fulltext_chunks WHERE chunk_id = ?", (chunk_id,)
+        ).fetchone()
+        return dict(row) if row else None
+
+    def count_chunks_for_paper(self, paper_id: str) -> int:
+        """Count chunks for a paper."""
+        row = self.conn.execute(
+            "SELECT COUNT(*) FROM paper_fulltext_chunks WHERE paper_id = ?", (paper_id,)
+        ).fetchone()
+        return row[0]
+
+    def has_chunks(self, paper_id: str) -> bool:
+        """Check if a paper has parsed chunks."""
+        return self.count_chunks_for_paper(paper_id) > 0
+
+    def search_fulltext(self, query: str, topic: str | None = None,
+                        paper_id: str | None = None, limit: int = 20) -> list[dict[str, Any]]:
+        """Search fulltext chunks using FTS5."""
+        if topic:
+            rows = self.conn.execute(
+                """SELECT c.*, p.title, p.year, p.doi
+                FROM paper_chunks_fts fts
+                INNER JOIN paper_fulltext_chunks c ON fts.chunk_id = c.chunk_id
+                INNER JOIN papers p ON c.paper_id = p.paper_id
+                INNER JOIN topic_papers tp ON c.paper_id = tp.paper_id
+                WHERE paper_chunks_fts MATCH ? AND tp.topic = ?
+                ORDER BY rank
+                LIMIT ?""",
+                (query, topic, limit),
+            ).fetchall()
+        elif paper_id:
+            rows = self.conn.execute(
+                """SELECT c.*, p.title, p.year, p.doi
+                FROM paper_chunks_fts fts
+                INNER JOIN paper_fulltext_chunks c ON fts.chunk_id = c.chunk_id
+                INNER JOIN papers p ON c.paper_id = p.paper_id
+                WHERE paper_chunks_fts MATCH ? AND c.paper_id = ?
+                ORDER BY rank
+                LIMIT ?""",
+                (query, paper_id, limit),
+            ).fetchall()
+        else:
+            rows = self.conn.execute(
+                """SELECT c.*, p.title, p.year, p.doi
+                FROM paper_chunks_fts fts
+                INNER JOIN paper_fulltext_chunks c ON fts.chunk_id = c.chunk_id
+                INNER JOIN papers p ON c.paper_id = p.paper_id
+                WHERE paper_chunks_fts MATCH ?
+                ORDER BY rank
+                LIMIT ?""",
+                (query, limit),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def sync_chunk_fts(self) -> None:
+        """Rebuild the FTS5 index from the chunks table."""
+        self.conn.execute(
+            "INSERT INTO paper_chunks_fts(rowid, chunk_id, paper_id, text, section) "
+            "SELECT rowid, chunk_id, paper_id, text, section FROM paper_fulltext_chunks"
+        )
+        self.conn.commit()
+
+    # --- Paper Notes ---
+
+    def insert_paper_note(self, note_id: str, paper_id: str, title: str, body: str,
+                          topic: str | None = None, note_type: str = "paper_summary",
+                          linked_claim_ids: list[str] | None = None,
+                          linked_chunk_ids: list[str] | None = None) -> None:
+        """Insert a paper note."""
+        now = datetime.now(timezone.utc).isoformat()
+        self.conn.execute(
+            """INSERT INTO paper_notes
+                (note_id, paper_id, topic, note_type, title, body,
+                 linked_claim_ids_json, linked_chunk_ids_json, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (note_id, paper_id, topic, note_type, title, body,
+             json.dumps(linked_claim_ids or []), json.dumps(linked_chunk_ids or []), now),
+        )
+        self.conn.commit()
+
+    def get_paper_notes(self, paper_id: str) -> list[dict[str, Any]]:
+        """Get all notes for a paper."""
+        rows = self.conn.execute(
+            "SELECT * FROM paper_notes WHERE paper_id = ? ORDER BY created_at DESC",
+            (paper_id,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def get_notes_for_topic(self, topic: str) -> list[dict[str, Any]]:
+        """Get all notes for a topic."""
+        rows = self.conn.execute(
+            "SELECT * FROM paper_notes WHERE topic = ? ORDER BY created_at DESC",
+            (topic,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    # --- Review Runs ---
+
+    def insert_review_run(self, run_id: str, topic: str, status: str = "pending",
+                          input_papers_json: str | None = None,
+                          input_claims_json: str | None = None,
+                          input_chunks_json: str | None = None,
+                          output_dir: str | None = None) -> None:
+        """Insert a review run."""
+        now = datetime.now(timezone.utc).isoformat()
+        self.conn.execute(
+            """INSERT INTO review_runs
+                (run_id, topic, input_papers_json, input_claims_json, input_chunks_json,
+                 output_dir, status, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (run_id, topic, input_papers_json, input_claims_json, input_chunks_json,
+             output_dir, status, now),
+        )
+        self.conn.commit()
+
+    def update_review_run(self, run_id: str, status: str | None = None,
+                          output_dir: str | None = None) -> None:
+        """Update a review run."""
+        updates = []
+        params: list[Any] = []
+        if status is not None:
+            updates.append("status = ?")
+            params.append(status)
+        if output_dir is not None:
+            updates.append("output_dir = ?")
+            params.append(output_dir)
+        if updates:
+            params.append(run_id)
+            self.conn.execute(
+                f"UPDATE review_runs SET {', '.join(updates)} WHERE run_id = ?",
+                params,
+            )
+            self.conn.commit()
+
+    def get_review_run(self, run_id: str) -> dict[str, Any] | None:
+        """Get a review run by ID."""
+        row = self.conn.execute(
+            "SELECT * FROM review_runs WHERE run_id = ?", (run_id,)
+        ).fetchone()
+        return dict(row) if row else None
+
+    def get_review_runs_for_topic(self, topic: str) -> list[dict[str, Any]]:
+        """Get all review runs for a topic."""
+        rows = self.conn.execute(
+            "SELECT * FROM review_runs WHERE topic = ? ORDER BY created_at DESC",
+            (topic,),
+        ).fetchall()
+        return [dict(r) for r in rows]
 
 
 def compute_claim_hash(claim: Claim) -> str:

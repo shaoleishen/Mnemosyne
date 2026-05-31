@@ -30,8 +30,22 @@ def _build_review_text(topic: str, papers: list[dict[str, Any]], claims: list[di
     def cite(paper_id: str) -> str:
         return f"[@{keys.get(paper_id, paper_id)}]"
 
+    def evidence_tag(claim: dict) -> str:
+        status = claim.get("evidence_status", "abstract_only")
+        if status == "full_text_reviewed":
+            return " [full-text]"
+        elif status == "direct_evidence":
+            return " [direct]"
+        return ""
+
     text = f"# Literature Review: {topic}\n\n"
     text += f"Based on analysis of {len(papers)} papers and {len(claims)} claims from the KnowCran knowledge base.\n\n"
+
+    # Evidence coverage summary
+    ft_count = sum(1 for c in claims if c.get("evidence_status") == "full_text_reviewed")
+    abstract_count = sum(1 for c in claims if c.get("evidence_status", "abstract_only") == "abstract_only")
+    if ft_count > 0:
+        text += f"> **Evidence Coverage**: {ft_count} claims from full text, {abstract_count} from abstracts only.\n\n"
 
     # Invariant: if we have claims, at least one section must have evidence
     has_any_evidence = any(len(v) > 0 for v in groups.values())
@@ -42,7 +56,7 @@ def _build_review_text(topic: str, papers: list[dict[str, Any]], claims: list[di
     summaries = groups.get("abstract_summary", [])
     if summaries:
         for s in summaries[:5]:
-            text += f"- {s['claim_text']} {cite(s['paper_id'])}\n"
+            text += f"- {s['claim_text']} {cite(s['paper_id'])}{evidence_tag(s)}\n"
     else:
         text += "Needs evidence.\n"
     text += "\n"
@@ -51,7 +65,7 @@ def _build_review_text(topic: str, papers: list[dict[str, Any]], claims: list[di
     results = groups.get("result", [])
     if results:
         for r in results[:8]:
-            text += f"- {r['claim_text']} {cite(r['paper_id'])}\n"
+            text += f"- {r['claim_text']} {cite(r['paper_id'])}{evidence_tag(r)}\n"
     else:
         text += "Needs evidence.\n"
     text += "\n"
@@ -60,7 +74,7 @@ def _build_review_text(topic: str, papers: list[dict[str, Any]], claims: list[di
     methods = groups.get("method", [])
     if methods:
         for m in methods[:5]:
-            text += f"- {m['claim_text']} {cite(m['paper_id'])}\n"
+            text += f"- {m['claim_text']} {cite(m['paper_id'])}{evidence_tag(m)}\n"
     else:
         text += "Needs evidence.\n"
     text += "\n"
@@ -69,7 +83,7 @@ def _build_review_text(topic: str, papers: list[dict[str, Any]], claims: list[di
     limitations = groups.get("limitation", [])
     if limitations:
         for l in limitations[:5]:
-            text += f"- {l['claim_text']} {cite(l['paper_id'])}\n"
+            text += f"- {l['claim_text']} {cite(l['paper_id'])}{evidence_tag(l)}\n"
     else:
         text += "Needs evidence.\n"
     text += "\n"
@@ -85,7 +99,7 @@ def _build_review_text(topic: str, papers: list[dict[str, Any]], claims: list[di
     open_qs = groups.get("open_question", [])
     if open_qs:
         for q in open_qs[:5]:
-            text += f"- {q['claim_text']} {cite(q['paper_id'])}\n"
+            text += f"- {q['claim_text']} {cite(q['paper_id'])}{evidence_tag(q)}\n"
     else:
         text += "Needs evidence.\n"
     text += "\n"
@@ -294,7 +308,13 @@ def review(
     vault_dir: Path = VAULT_DIR,
     llm_provider: Any | None = None,
     agent_provider: Any | None = None,
+    fulltext: bool = False,
 ) -> ReviewOutput:
+    """Generate a literature review from stored claims.
+
+    If fulltext=True, prioritizes full-text reviewed claims and
+    includes evidence status information.
+    """
     own = storage is None
     storage = storage or Storage()
     try:
@@ -309,10 +329,20 @@ def review(
         else:
             papers = storage.get_papers_by_topic(topic, limit=max_papers)
         selected_paper_ids = {p["paper_id"] for p in papers}
-        claims = [
+        all_claims = [
             c for c in storage.get_claims_by_topic(topic)
             if c["paper_id"] in selected_paper_ids
         ]
+
+        # If fulltext mode, prioritize full-text claims
+        if fulltext:
+            fulltext_claims = [c for c in all_claims if c.get("evidence_status") == "full_text_reviewed"]
+            abstract_claims = [c for c in all_claims if c.get("evidence_status") != "full_text_reviewed"]
+            # Use fulltext claims when available, fall back to abstract
+            claims = fulltext_claims if fulltext_claims else abstract_claims
+        else:
+            claims = all_claims
+
         paper_ids = [p["paper_id"] for p in papers]
 
         # Try agent/LLM review synthesis

@@ -127,6 +127,24 @@ class MinerUManager:
         except Exception as e:
             logger.warning(f"Failed to check local Docker images: {e}")
 
+        # Check GPU compatibility if GPU is requested
+        if self.gpu:
+            try:
+                runtime_check = subprocess.run(
+                    ["docker", "info", "--format", "{{json .Runtimes}}"],
+                    capture_output=True, text=True, check=True
+                )
+                if "nvidia" not in runtime_check.stdout:
+                    raise RuntimeError(
+                        "NVIDIA Container Toolkit is not configured in Docker, but GPU acceleration was requested (--gpu or MNEMOSYNE_MINERU_GPU=true).\n"
+                        "To use GPU acceleration inside Docker, you must configure the NVIDIA Container Toolkit:\n"
+                        "  https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html"
+                    )
+            except subprocess.CalledProcessError as e:
+                logger.warning(f"Failed to check Docker runtimes: {e.stderr or e}")
+            except Exception as e:
+                logger.warning(f"Failed to check Docker runtimes: {e}")
+
         self.write_compose_file()
         compose_file = self.get_compose_file_path()
         

@@ -57,6 +57,7 @@ def test_start_mineru_docker(mock_in_use, mock_probe, mock_run, tmp_path):
         mineru_backend="docker",
         mineru_api_url="http://127.0.0.1:8000",
         embedding_provider="none",  # Avoid starting embedding server in this test
+        mineru_gpu=False,
     )
     
     mock_in_use.return_value = False

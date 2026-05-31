@@ -789,6 +789,119 @@ def _handle_run_topic(params: dict[str, Any]) -> dict[str, Any]:
         storage.close()
 
 
+def _handle_search_fulltext_hybrid(params: dict[str, Any]) -> dict[str, Any]:
+    """Search fulltext chunks using a hybrid approach combining FTS5 keyword matching and vector similarity."""
+    from knowcran.fulltext import hybrid_search_chunks as do_hybrid_search
+    storage = _get_storage(params.get("data_dir"))
+    try:
+        results = do_hybrid_search(
+            query=params["query"],
+            topic=params.get("topic"),
+            paper_id=params.get("paper_id"),
+            limit=params.get("limit", 20),
+            storage=storage,
+        )
+        return {
+            "results": results,
+            "count": len(results),
+            "query": params["query"],
+        }
+    finally:
+        storage.close()
+
+
+def _handle_get_evidence_pack(params: dict[str, Any]) -> dict[str, Any]:
+    """Retrieve an evidence pack for a topic, including claims, page ranges, and contexts."""
+    storage = _get_storage(params.get("data_dir"))
+    try:
+        topic = params["topic"]
+        limit = params.get("limit", 50)
+        canonical_topic = storage.resolve_topic(topic)
+        claims = storage.conn.execute(
+            "SELECT * FROM claims WHERE topic = ? ORDER BY evidence_type, confidence DESC LIMIT ?",
+            (canonical_topic, limit),
+        ).fetchall()
+        pack = []
+        for r in claims:
+            c = dict(r)
+            paper_id = c.get("paper_id")
+            paper = storage.get_paper(paper_id) if paper_id else None
+            chunk = None
+            chunk_id = None
+            source_span = c.get("source_span_json")
+            if source_span:
+                try:
+                    span = json.loads(source_span) if isinstance(source_span, str) else source_span
+                    if isinstance(span, dict):
+                        chunk_id = span.get("chunk_id")
+                except (json.JSONDecodeError, TypeError):
+                    pass
+            if chunk_id:
+                chunk = storage.get_chunk(chunk_id)
+            pack.append({
+                "claim_id": c.get("claim_id"),
+                "paper_id": paper_id,
+                "title": paper.get("title") if paper else None,
+                "citation_key": c.get("citation_key") or (paper.get("citation_key") if paper else None),
+                "claim_text": c.get("claim_text"),
+                "evidence_type": c.get("evidence_type"),
+                "confidence": c.get("confidence"),
+                "source_quote": c.get("source_quote") or c.get("source_location"),
+                "source_location": c.get("source_location"),
+                "source_span": source_span,
+                "evidence_status": c.get("evidence_status", "abstract_only"),
+                "chunk_text": chunk.get("text") if chunk else None,
+                "page_start": chunk.get("page_start") if chunk else None,
+                "page_end": chunk.get("page_end") if chunk else None,
+                "section": chunk.get("section") if chunk else None,
+            })
+        return {
+            "topic": canonical_topic,
+            "claims": pack,
+            "count": len(pack),
+        }
+    finally:
+        storage.close()
+
+
+def _handle_get_page_context(params: dict[str, Any]) -> dict[str, Any]:
+    """Retrieve chunks from a specific page and adjacent pages for a given paper."""
+    storage = _get_storage(params.get("data_dir"))
+    try:
+        paper_id = params["paper_id"]
+        page_number = params["page_number"]
+        window = params.get("window", 1)
+        min_page = max(1, page_number - window)
+        max_page = page_number + window
+
+        rows = storage.conn.execute(
+            """SELECT * FROM paper_chunks 
+               WHERE paper_id = ? AND page_start <= ? AND page_end >= ? 
+               ORDER BY chunk_index""",
+            (paper_id, max_page, min_page)
+        ).fetchall()
+        chunks = [dict(r) for r in rows]
+
+        if not chunks:
+            rows = storage.conn.execute(
+                """SELECT * FROM paper_fulltext_chunks 
+                   WHERE paper_id = ? AND page_start <= ? AND page_end >= ? 
+                   ORDER BY chunk_index""",
+                (paper_id, max_page, min_page)
+            ).fetchall()
+            chunks = [dict(r) for r in rows]
+
+        return {
+            "paper_id": paper_id,
+            "page_number": page_number,
+            "window": window,
+            "chunks": chunks,
+            "count": len(chunks),
+        }
+    finally:
+        storage.close()
+
+
 # ---------------------------------------------------------------------------
 # Handler dispatch map
 # ---------------------------------------------------------------------------
@@ -821,6 +934,9 @@ _TOOL_HANDLERS = {
     "knowcran_read_fulltext": _handle_read_fulltext,
     "knowcran_review_fulltext": _handle_review_fulltext,
     "knowcran_run_topic": _handle_run_topic,
+    "knowcran_search_fulltext_hybrid": _handle_search_fulltext_hybrid,
+    "knowcran_get_evidence_pack": _handle_get_evidence_pack,
+    "knowcran_get_page_context": _handle_get_page_context,
 }
 
 # Legacy handler names (backward compat)

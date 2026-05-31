@@ -201,6 +201,62 @@ CREATE TABLE IF NOT EXISTS review_runs (
     status TEXT NOT NULL DEFAULT 'pending',
     created_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS parsed_documents (
+    paper_id TEXT PRIMARY KEY,
+    asset_id TEXT NOT NULL,
+    parser_name TEXT NOT NULL,
+    parser_version TEXT NOT NULL,
+    status TEXT NOT NULL,
+    error TEXT,
+    source_hash TEXT,
+    content_hash TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS parsed_pages (
+    page_id TEXT PRIMARY KEY,
+    paper_id TEXT NOT NULL,
+    page_idx INTEGER NOT NULL,
+    page_number INTEGER NOT NULL,
+    width REAL,
+    height REAL,
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS parsed_elements (
+    element_id TEXT PRIMARY KEY,
+    paper_id TEXT NOT NULL,
+    page_idx INTEGER NOT NULL,
+    element_type TEXT NOT NULL,
+    text TEXT NOT NULL,
+    bbox TEXT,
+    section TEXT,
+    element_index INTEGER NOT NULL,
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS paper_chunks (
+    chunk_id TEXT PRIMARY KEY,
+    paper_id TEXT NOT NULL,
+    page_start INTEGER NOT NULL,
+    page_end INTEGER NOT NULL,
+    section TEXT,
+    chunk_index INTEGER NOT NULL,
+    text TEXT NOT NULL,
+    text_hash TEXT NOT NULL,
+    token_count INTEGER NOT NULL,
+    element_ids_json TEXT,
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS chunk_embeddings (
+    chunk_id TEXT PRIMARY KEY,
+    embedding_model TEXT NOT NULL,
+    embedding BLOB NOT NULL,
+    created_at TEXT NOT NULL
+);
 """
 
 
@@ -296,6 +352,21 @@ def _migrate(conn: sqlite3.Connection) -> None:
         CREATE VIRTUAL TABLE IF NOT EXISTS paper_chunks_fts USING fts5(
             chunk_id, paper_id, text, section,
             content='paper_fulltext_chunks',
+            content_rowid='rowid'
+        )
+    """)
+
+    # New tables indices
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_parsed_elements_paper_id ON parsed_elements(paper_id)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_parsed_elements_page_idx ON parsed_elements(page_idx)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_paper_chunks_paper_id ON paper_chunks(paper_id)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_chunk_embeddings_chunk_id ON chunk_embeddings(chunk_id)")
+
+    # FTS5 virtual table for new chunks
+    cursor.execute("""
+        CREATE VIRTUAL TABLE IF NOT EXISTS new_paper_chunks_fts USING fts5(
+            chunk_id, paper_id, text, section,
+            content='paper_chunks',
             content_rowid='rowid'
         )
     """)
@@ -957,6 +1028,89 @@ class Storage:
 
     # --- Fulltext Chunks ---
 
+    def insert_parsed_document(self, paper_id: str, asset_id: str, parser_name: str, parser_version: str, status: str, error: str | None = None, source_hash: str | None = None, content_hash: str | None = None) -> None:
+        now = datetime.now(timezone.utc).isoformat()
+        self.conn.execute(
+            """INSERT OR REPLACE INTO parsed_documents (paper_id, asset_id, parser_name, parser_version, status, error, source_hash, content_hash, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (paper_id, asset_id, parser_name, parser_version, status, error, source_hash, content_hash, now, now),
+        )
+        self.conn.commit()
+
+    def get_parsed_document(self, paper_id: str) -> dict[str, Any] | None:
+        row = self.conn.execute("SELECT * FROM parsed_documents WHERE paper_id = ?", (paper_id,)).fetchone()
+        return dict(row) if row else None
+
+    def insert_parsed_pages(self, pages: list[dict[str, Any]]) -> None:
+        now = datetime.now(timezone.utc).isoformat()
+        rows = [(p["page_id"], p["paper_id"], p["page_idx"], p["page_number"], p.get("width"), p.get("height"), now) for p in pages]
+        self.conn.executemany(
+            """INSERT OR REPLACE INTO parsed_pages (page_id, paper_id, page_idx, page_number, width, height, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            rows,
+        )
+        self.conn.commit()
+
+    def get_parsed_pages(self, paper_id: str) -> list[dict[str, Any]]:
+        rows = self.conn.execute("SELECT * FROM parsed_pages WHERE paper_id = ? ORDER BY page_idx", (paper_id,)).fetchall()
+        return [dict(r) for r in rows]
+
+    def insert_parsed_elements(self, elements: list[dict[str, Any]]) -> None:
+        now = datetime.now(timezone.utc).isoformat()
+        rows = [(e["element_id"], e["paper_id"], e["page_idx"], e["element_type"], e["text"], e.get("bbox"), e.get("section"), e["element_index"], now) for e in elements]
+        self.conn.executemany(
+            """INSERT OR REPLACE INTO parsed_elements (element_id, paper_id, page_idx, element_type, text, bbox, section, element_index, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            rows,
+        )
+        self.conn.commit()
+
+    def get_parsed_elements(self, paper_id: str) -> list[dict[str, Any]]:
+        rows = self.conn.execute("SELECT * FROM parsed_elements WHERE paper_id = ? ORDER BY page_idx, element_index", (paper_id,)).fetchall()
+        return [dict(r) for r in rows]
+
+    def insert_paper_chunks(self, chunks: list[dict[str, Any]]) -> None:
+        now = datetime.now(timezone.utc).isoformat()
+        rows = []
+        for c in chunks:
+            text = c["text"]
+            text_hash = c.get("text_hash") or hashlib.sha256(text.encode()).hexdigest()[:16]
+            token_count = c.get("token_count") or len(text.split())
+            rows.append((
+                c["chunk_id"], c["paper_id"], c["page_start"], c["page_end"], c.get("section"),
+                c["chunk_index"], text, text_hash, token_count, c.get("element_ids_json"), now
+            ))
+        self.conn.executemany(
+            """INSERT OR REPLACE INTO paper_chunks (chunk_id, paper_id, page_start, page_end, section, chunk_index, text, text_hash, token_count, element_ids_json, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            rows,
+        )
+        self.conn.commit()
+
+    def insert_chunk_embeddings(self, embeddings: list[dict[str, Any]]) -> None:
+        now = datetime.now(timezone.utc).isoformat()
+        rows = [(e["chunk_id"], e["embedding_model"], e["embedding"], now) for e in embeddings]
+        self.conn.executemany(
+            """INSERT OR REPLACE INTO chunk_embeddings (chunk_id, embedding_model, embedding, created_at)
+            VALUES (?, ?, ?, ?)""",
+            rows,
+        )
+        self.conn.commit()
+
+    def get_chunk_embedding(self, chunk_id: str) -> dict[str, Any] | None:
+        row = self.conn.execute("SELECT * FROM chunk_embeddings WHERE chunk_id = ?", (chunk_id,)).fetchone()
+        return dict(row) if row else None
+
+    def get_all_embeddings_for_topic(self, topic: str, model: str) -> list[dict[str, Any]]:
+        rows = self.conn.execute(
+            """SELECT e.*, c.paper_id FROM chunk_embeddings e
+            INNER JOIN paper_chunks c ON e.chunk_id = c.chunk_id
+            INNER JOIN topic_papers tp ON c.paper_id = tp.paper_id
+            WHERE tp.topic = ? AND e.embedding_model = ?""",
+            (topic, model),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
     def insert_fulltext_chunk(self, chunk_id: str, paper_id: str, asset_id: str,
                               text: str, page_start: int | None = None,
                               page_end: int | None = None, section: str | None = None,
@@ -999,6 +1153,14 @@ class Storage:
 
     def get_chunks_for_paper(self, paper_id: str) -> list[dict[str, Any]]:
         """Get all chunks for a paper, ordered by chunk index."""
+        # Try new schema first
+        rows = self.conn.execute(
+            "SELECT * FROM paper_chunks WHERE paper_id = ? ORDER BY chunk_index",
+            (paper_id,),
+        ).fetchall()
+        if rows:
+            return [dict(r) for r in rows]
+        # Fall back to legacy schema
         rows = self.conn.execute(
             "SELECT * FROM paper_fulltext_chunks WHERE paper_id = ? ORDER BY chunk_index",
             (paper_id,),
@@ -1008,12 +1170,22 @@ class Storage:
     def get_chunk(self, chunk_id: str) -> dict[str, Any] | None:
         """Get a chunk by ID."""
         row = self.conn.execute(
+            "SELECT * FROM paper_chunks WHERE chunk_id = ?", (chunk_id,)
+        ).fetchone()
+        if row:
+            return dict(row)
+        row = self.conn.execute(
             "SELECT * FROM paper_fulltext_chunks WHERE chunk_id = ?", (chunk_id,)
         ).fetchone()
         return dict(row) if row else None
 
     def count_chunks_for_paper(self, paper_id: str) -> int:
         """Count chunks for a paper."""
+        row = self.conn.execute(
+            "SELECT COUNT(*) FROM paper_chunks WHERE paper_id = ?", (paper_id,)
+        ).fetchone()
+        if row[0] > 0:
+            return row[0]
         row = self.conn.execute(
             "SELECT COUNT(*) FROM paper_fulltext_chunks WHERE paper_id = ?", (paper_id,)
         ).fetchone()
@@ -1026,6 +1198,48 @@ class Storage:
     def search_fulltext(self, query: str, topic: str | None = None,
                         paper_id: str | None = None, limit: int = 20) -> list[dict[str, Any]]:
         """Search fulltext chunks using FTS5."""
+        # Try new schema first
+        try:
+            if topic:
+                rows = self.conn.execute(
+                    """SELECT c.*, p.title, p.year, p.doi
+                    FROM new_paper_chunks_fts fts
+                    INNER JOIN paper_chunks c ON fts.chunk_id = c.chunk_id
+                    INNER JOIN papers p ON c.paper_id = p.paper_id
+                    INNER JOIN topic_papers tp ON c.paper_id = tp.paper_id
+                    WHERE new_paper_chunks_fts MATCH ? AND tp.topic = ?
+                    ORDER BY rank
+                    LIMIT ?""",
+                    (query, topic, limit),
+                ).fetchall()
+            elif paper_id:
+                rows = self.conn.execute(
+                    """SELECT c.*, p.title, p.year, p.doi
+                    FROM new_paper_chunks_fts fts
+                    INNER JOIN paper_chunks c ON fts.chunk_id = c.chunk_id
+                    INNER JOIN papers p ON c.paper_id = p.paper_id
+                    WHERE new_paper_chunks_fts MATCH ? AND c.paper_id = ?
+                    ORDER BY rank
+                    LIMIT ?""",
+                    (query, paper_id, limit),
+                ).fetchall()
+            else:
+                rows = self.conn.execute(
+                    """SELECT c.*, p.title, p.year, p.doi
+                    FROM new_paper_chunks_fts fts
+                    INNER JOIN paper_chunks c ON fts.chunk_id = c.chunk_id
+                    INNER JOIN papers p ON c.paper_id = p.paper_id
+                    WHERE new_paper_chunks_fts MATCH ?
+                    ORDER BY rank
+                    LIMIT ?""",
+                    (query, limit),
+                ).fetchall()
+            if rows:
+                return [dict(r) for r in rows]
+        except Exception as e:
+            logger.debug(f"new_paper_chunks_fts search failed or empty, trying legacy: {e}")
+
+        # Fallback to legacy schema
         if topic:
             rows = self.conn.execute(
                 """SELECT c.*, p.title, p.year, p.doi
@@ -1068,7 +1282,14 @@ class Storage:
         Uses the FTS5 'rebuild' command which is idempotent and safe to call
         multiple times. This replaces the entire index with current data.
         """
-        self.conn.execute("INSERT INTO paper_chunks_fts(paper_chunks_fts) VALUES('rebuild')")
+        try:
+            self.conn.execute("INSERT INTO new_paper_chunks_fts(new_paper_chunks_fts) VALUES('rebuild')")
+        except Exception as e:
+            logger.debug(f"new_paper_chunks_fts rebuild failed: {e}")
+        try:
+            self.conn.execute("INSERT INTO paper_chunks_fts(paper_chunks_fts) VALUES('rebuild')")
+        except Exception as e:
+            logger.debug(f"paper_chunks_fts rebuild failed: {e}")
         self.conn.commit()
 
     def rebuild_fulltext_index(self) -> None:

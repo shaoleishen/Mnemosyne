@@ -65,7 +65,7 @@ class Settings:
     claw_max_retries: int = field(default_factory=lambda: int(os.getenv("MNEMOSYNE_CLAW_MAX_RETRIES", "2")))
     llm_cache_dir: Path = field(default_factory=lambda: Path(os.getenv("MNEMOSYNE_LLM_CACHE_DIR", "data/raw/llm")))
 
-    # PDF download and parsing settings
+    # PDF download, parsing, and embedding settings
     pdf_download_enabled: bool = field(default_factory=lambda: os.getenv("MNEMOSYNE_PDF_DOWNLOAD_ENABLED", "true").lower() == "true")
     pdf_dir: Path = field(default_factory=lambda: Path(os.getenv("MNEMOSYNE_PDF_DIR", "data/pdfs")))
     pdf_strategy: str = field(default_factory=lambda: os.getenv("MNEMOSYNE_PDF_STRATEGY", "fastest"))
@@ -73,6 +73,14 @@ class Settings:
     libgen_enabled: bool = field(default_factory=lambda: os.getenv("MNEMOSYNE_LIBGEN_ENABLED", "true").lower() == "true")
     tor_enabled: bool = field(default_factory=lambda: os.getenv("MNEMOSYNE_TOR_ENABLED", "false").lower() == "true")
     pdf_batch_workers: int = field(default_factory=lambda: int(os.getenv("MNEMOSYNE_PDF_BATCH_WORKERS", "5")))
+    pdf_parser: str = field(default_factory=lambda: os.getenv("MNEMOSYNE_PDF_PARSER", "auto"))
+    mineru_api_url: str = field(default_factory=lambda: os.getenv("MINERU_API_URL", "http://127.0.0.1:8000"))
+    mineru_return_md: bool = field(default_factory=lambda: os.getenv("MINERU_RETURN_MD", "true").lower() == "true")
+    mineru_return_content_list: bool = field(default_factory=lambda: os.getenv("MINERU_RETURN_CONTENT_LIST", "true").lower() == "true")
+    openai_api_key: str = field(default_factory=lambda: os.getenv("OPENAI_API_key", os.getenv("OPENAI_API_KEY", "")))
+    openai_api_base: str = field(default_factory=lambda: os.getenv("MNEMOSYNE_EMBEDDING_API_BASE", "https://api.openai.com/v1"))
+    embedding_provider: str = field(default_factory=lambda: os.getenv("MNEMOSYNE_EMBEDDING_PROVIDER", "openai"))
+    embedding_model: str = field(default_factory=lambda: os.getenv("MNEMOSYNE_EMBEDDING_MODEL", "text-embedding-3-large"))
 
     @property
     def raw_dir(self) -> Path:

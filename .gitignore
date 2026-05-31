@@ -24,3 +24,5 @@ htmlcov/
 pi-packages/
 UNKNOWN.egg-info/
 MNEMOSYNE_VAULT_OUTPUT_REVIEW_*.md
+pytest_temp/
+

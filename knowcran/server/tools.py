@@ -406,6 +406,69 @@ def get_fulltext_read_tools() -> list[dict[str, Any]]:
                 openWorldHint=False,
             ),
         },
+        {
+            "name": "knowcran_search_fulltext_hybrid",
+            "description": "Search fulltext chunks using a hybrid approach combining FTS5 keyword matching and vector similarity. Returns best matching chunks.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Search query"},
+                    "topic": {"type": "string", "description": "Scope search to topic (optional)"},
+                    "paper_id": {"type": "string", "description": "Scope search to specific paper ID (optional)"},
+                    "limit": {"type": "integer", "description": "Max results (default 20)", "default": 20},
+                    "data_dir": {"type": "string", "description": "Data directory path (optional)"},
+                },
+                "required": ["query"],
+            },
+            "annotations": ToolAnnotations(
+                title="Search Fulltext Hybrid",
+                readOnlyHint=True,
+                destructiveHint=False,
+                idempotentHint=True,
+                openWorldHint=False,
+            ),
+        },
+        {
+            "name": "knowcran_get_evidence_pack",
+            "description": "Retrieve an evidence pack for a topic, including extracted claims, source quotes, bounding boxes, page ranges, and citation keys.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "topic": {"type": "string", "description": "Topic name"},
+                    "limit": {"type": "integer", "description": "Max claims (default 50)", "default": 50},
+                    "data_dir": {"type": "string", "description": "Data directory path (optional)"},
+                },
+                "required": ["topic"],
+            },
+            "annotations": ToolAnnotations(
+                title="Get Evidence Pack",
+                readOnlyHint=True,
+                destructiveHint=False,
+                idempotentHint=True,
+                openWorldHint=False,
+            ),
+        },
+        {
+            "name": "knowcran_get_page_context",
+            "description": "Retrieve chunks from a specific page and adjacent pages (e.g. page-1 to page+1) for a given paper to provide context around a specific page number.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "paper_id": {"type": "string", "description": "Paper ID"},
+                    "page_number": {"type": "integer", "description": "Target page number (1-indexed)"},
+                    "window": {"type": "integer", "description": "Number of adjacent pages to include (default 1)", "default": 1},
+                    "data_dir": {"type": "string", "description": "Data directory path (optional)"},
+                },
+                "required": ["paper_id", "page_number"],
+            },
+            "annotations": ToolAnnotations(
+                title="Get Page Context",
+                readOnlyHint=True,
+                destructiveHint=False,
+                idempotentHint=True,
+                openWorldHint=False,
+            ),
+        },
     ]
 
 

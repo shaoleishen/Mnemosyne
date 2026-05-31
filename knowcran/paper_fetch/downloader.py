@@ -217,28 +217,46 @@ def _race_sources(sources: list[type[SourceBase]], doi: str | None,
                    arxiv_id: str | None, title: str | None, identifier: str,
                    cache: PDFCache, pdf_dir: str) -> DownloadResult:
     """Race all sources in parallel, return the first success."""
+    import concurrent.futures
+
     with ThreadPoolExecutor(max_workers=min(len(sources), 5)) as executor:
         futures = {
             executor.submit(_try_source, src, doi, arxiv_id, title): src
             for src in sources
         }
-        for future in as_completed(futures, timeout=60):
-            try:
-                result = future.result()
-                if result and result.success:
-                    # Store in cache
-                    filename = safe_filename(title or "", doi)
-                    if result._payload:
-                        result.file_path = str(cache.store(result._payload, filename))
-                        result._payload = None  # Release memory
-                    return result
-            except Exception as e:
-                logger.debug(f"Source {futures[future].name} exception: {e}")
+        try:
+            for future in concurrent.futures.as_completed(futures, timeout=120):
+                try:
+                    result = future.result()
+                    if result and result.success:
+                        # Store in cache
+                        filename = safe_filename(title or "", doi)
+                        if result._payload:
+                            result.file_path = str(cache.store(result._payload, filename))
+                            result._payload = None  # Release memory
+                        return result
+                except Exception as e:
+                    logger.debug(f"Source {futures[future].name} exception: {e}")
+        except concurrent.futures.TimeoutError:
+            logger.warning(f"Download timeout for {identifier} - some sources did not respond")
+            # Try to get results from completed futures
+            for future in futures:
+                if future.done():
+                    try:
+                        result = future.result()
+                        if result and result.success:
+                            filename = safe_filename(title or "", doi)
+                            if result._payload:
+                                result.file_path = str(cache.store(result._payload, filename))
+                                result._payload = None
+                            return result
+                    except Exception:
+                        pass
 
     return DownloadResult(
         success=False,
         identifier=identifier,
-        error="All sources failed",
+        error="All sources failed or timed out",
     )
 
 

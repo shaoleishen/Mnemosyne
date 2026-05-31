@@ -18,6 +18,8 @@ from knowcran.config import Settings
 from knowcran.models import Claim
 from knowcran.pdf_parse import parse_pdf, ParseResult
 from knowcran.storage import Storage
+from knowcran.parsers import MinerUParser, PyMuPDFParser
+from knowcran.parsers.base import ParsedDocument
 
 logger = logging.getLogger(__name__)
 
@@ -224,7 +226,7 @@ def parse_paper_pdf(
     storage: Storage | None = None,
     settings: Settings | None = None,
 ) -> dict[str, Any]:
-    """Parse a downloaded PDF into text chunks.
+    """Parse a downloaded PDF into layout-aware text chunks and generate embeddings.
 
     Returns parse result with chunk count and status.
     """
@@ -257,30 +259,123 @@ def parse_paper_pdf(
             "message": "Already parsed",
         }
 
-    # Parse
-    result = parse_pdf(
-        pdf_path=downloaded["file_path"],
-        paper_id=paper_id,
-        asset_id=downloaded["asset_id"],
-    )
+    # Choose parser based on settings
+    parser_type = settings.pdf_parser
+    parser = MinerUParser(api_url=settings.mineru_api_url) if parser_type == "mineru" else PyMuPDFParser()
 
-    if result.success:
-        # Store chunks
-        chunk_dicts = [c.to_dict() for c in result.chunks]
-        storage.insert_fulltext_chunks(chunk_dicts)
+    logger.info(f"Parsing PDF for paper {paper_id} using {parser_type} (file: {downloaded['file_path']})")
+    try:
+        parsed_doc = parser.parse(Path(downloaded["file_path"]), paper_id, downloaded["asset_id"])
+    except Exception as e:
+        logger.error(f"Parser {parser_type} failed with exception: {e}")
+        parsed_doc = ParsedDocument(
+            paper_id=paper_id,
+            asset_id=downloaded["asset_id"],
+            parser_name=parser_type,
+            parser_version="1.0.0",
+            status="error",
+            error=str(e),
+        )
+
+    # Fallback behavior
+    if parsed_doc.status in ("error", "needs_ocr") and parser_type == "mineru":
+        logger.warning(f"MinerU parsing failed: {parsed_doc.error}. Falling back to PyMuPDF.")
+        try:
+            storage.update_paper_asset(
+                downloaded["asset_id"],
+                error=f"MinerU failed: {parsed_doc.error}. Fell back to PyMuPDF."
+            )
+        except Exception as e:
+            logger.warning(f"Failed to update asset for fallback: {e}")
+
+        fallback_parser = PyMuPDFParser()
+        try:
+            parsed_doc = fallback_parser.parse(Path(downloaded["file_path"]), paper_id, downloaded["asset_id"])
+        except Exception as e:
+            parsed_doc = ParsedDocument(
+                paper_id=paper_id,
+                asset_id=downloaded["asset_id"],
+                parser_name="pymupdf",
+                parser_version="1.0.0",
+                status="error",
+                error=str(e),
+            )
+
+    if parsed_doc.status == "parsed":
+        # Store layout components
+        storage.insert_parsed_document(
+            paper_id=parsed_doc.paper_id,
+            asset_id=parsed_doc.asset_id,
+            parser_name=parsed_doc.parser_name,
+            parser_version=parsed_doc.parser_version,
+            status=parsed_doc.status,
+            error=parsed_doc.error,
+            source_hash=parsed_doc.source_hash,
+            content_hash=parsed_doc.content_hash,
+        )
+        storage.insert_parsed_pages([p.to_dict() for p in parsed_doc.pages])
+        storage.insert_parsed_elements([e.to_dict() for e in parsed_doc.elements])
+
+        # Chunk elements
+        from knowcran.parsers.chunker import chunk_elements
+        chunks = chunk_elements(parsed_doc.elements, paper_id, downloaded["asset_id"])
+        storage.insert_paper_chunks(chunks)
+
+        # Legacy chunk support
+        legacy_chunks = []
+        for c in chunks:
+            legacy_chunks.append({
+                "chunk_id": c["chunk_id"],
+                "paper_id": c["paper_id"],
+                "asset_id": c["asset_id"],
+                "page_start": c["page_start"],
+                "page_end": c["page_end"],
+                "section": c["section"],
+                "chunk_index": c["chunk_index"],
+                "text": c["text"],
+            })
+        storage.insert_fulltext_chunks(legacy_chunks)
+
+        # Generate chunk embeddings
+        from knowcran.embeddings import EmbeddingProvider, vector_to_bytes
+        provider = EmbeddingProvider(settings)
+        chunk_texts = [c["text"] for c in chunks]
+        try:
+            embeddings = provider.embed_texts(chunk_texts)
+            emb_dicts = []
+            for idx, chunk in enumerate(chunks):
+                emb_bytes = vector_to_bytes(embeddings[idx])
+                emb_dicts.append({
+                    "chunk_id": chunk["chunk_id"],
+                    "embedding_model": provider.model,
+                    "embedding": emb_bytes,
+                })
+            storage.insert_chunk_embeddings(emb_dicts)
+        except Exception as e:
+            logger.error(f"Failed to generate embeddings for parsed chunks: {e}")
+
         # Sync FTS index
         try:
             storage.sync_chunk_fts()
         except Exception as e:
             logger.warning(f"FTS sync failed: {e}")
 
+        return {
+            "success": True,
+            "paper_id": paper_id,
+            "total_pages": len(parsed_doc.pages),
+            "chunk_count": len(chunks),
+            "status": parsed_doc.status,
+            "error": parsed_doc.error,
+        }
+
     return {
-        "success": result.success,
+        "success": False,
         "paper_id": paper_id,
-        "total_pages": result.total_pages,
-        "chunk_count": len(result.chunks),
-        "status": result.status,
-        "error": result.error,
+        "total_pages": len(parsed_doc.pages),
+        "chunk_count": 0,
+        "status": parsed_doc.status,
+        "error": parsed_doc.error,
     }
 
 
@@ -343,3 +438,121 @@ def search_fulltext(
     settings = settings or Settings()
     storage = storage or Storage(settings.db_path)
     return storage.search_fulltext(query, topic=topic, paper_id=paper_id, limit=limit)
+
+
+def hybrid_search_chunks(
+    query: str,
+    topic: str | None = None,
+    paper_id: str | None = None,
+    limit: int = 20,
+    storage: Storage | None = None,
+    settings: Settings | None = None,
+) -> list[dict[str, Any]]:
+    """Hybrid search combining SQLite FTS5 (BM25) and dense embeddings similarity.
+
+    Uses RRF (Reciprocal Rank Fusion) and section boosts.
+    """
+    settings = settings or Settings()
+    storage = storage or Storage(settings.db_path)
+
+    # 1. Generate query embedding
+    from knowcran.embeddings import EmbeddingProvider, bytes_to_vector
+    provider = EmbeddingProvider(settings)
+    try:
+        query_vector = provider.embed_texts([query])[0]
+    except Exception as e:
+        logger.error(f"Failed to generate query embedding: {e}")
+        query_vector = []
+
+    # 2. FTS5 BM25 search
+    fts_results = storage.search_fulltext(query, topic=topic, paper_id=paper_id, limit=limit * 5)
+    fts_ranks = {res["chunk_id"]: idx + 1 for idx, res in enumerate(fts_results)}
+    fts_map = {res["chunk_id"]: res for res in fts_results}
+
+    # 3. Dense embedding search
+    rows = []
+    if query_vector:
+        if topic:
+            canonical_topic = storage.resolve_topic(topic)
+            rows = storage.conn.execute(
+                """SELECT c.chunk_id, c.paper_id, c.page_start, c.page_end, c.section, c.chunk_index, c.text, p.title, p.year, p.doi, e.embedding
+                FROM chunk_embeddings e
+                INNER JOIN paper_chunks c ON e.chunk_id = c.chunk_id
+                INNER JOIN papers p ON c.paper_id = p.paper_id
+                INNER JOIN topic_papers tp ON c.paper_id = tp.paper_id
+                WHERE tp.topic = ? AND e.embedding_model = ?""",
+                (canonical_topic, provider.model),
+            ).fetchall()
+        elif paper_id:
+            rows = storage.conn.execute(
+                """SELECT c.chunk_id, c.paper_id, c.page_start, c.page_end, c.section, c.chunk_index, c.text, p.title, p.year, p.doi, e.embedding
+                FROM chunk_embeddings e
+                INNER JOIN paper_chunks c ON e.chunk_id = c.chunk_id
+                INNER JOIN papers p ON c.paper_id = p.paper_id
+                WHERE c.paper_id = ? AND e.embedding_model = ?""",
+                (paper_id, provider.model),
+            ).fetchall()
+        else:
+            rows = storage.conn.execute(
+                """SELECT c.chunk_id, c.paper_id, c.page_start, c.page_end, c.section, c.chunk_index, c.text, p.title, p.year, p.doi, e.embedding
+                FROM chunk_embeddings e
+                INNER JOIN paper_chunks c ON e.chunk_id = c.chunk_id
+                INNER JOIN papers p ON c.paper_id = p.paper_id
+                WHERE e.embedding_model = ?""",
+                (provider.model,),
+            ).fetchall()
+
+    vector_candidates = []
+    for r in rows:
+        chunk_dict = dict(r)
+        emb_bytes = chunk_dict.pop("embedding")
+        chunk_vector = bytes_to_vector(emb_bytes)
+
+        if len(query_vector) == len(chunk_vector) and any(chunk_vector):
+            sim = sum(x * y for x, y in zip(query_vector, chunk_vector))
+        else:
+            sim = 0.0
+
+        chunk_dict["similarity_score"] = sim
+        vector_candidates.append(chunk_dict)
+
+    vector_candidates.sort(key=lambda x: x["similarity_score"], reverse=True)
+    vector_results = vector_candidates[:limit * 5]
+    vector_ranks = {c["chunk_id"]: idx + 1 for idx, c in enumerate(vector_results)}
+    vector_map = {c["chunk_id"]: c for c in vector_results}
+
+    # 4. RRF Merging & Section Boosting
+    all_chunk_ids = set(fts_ranks.keys()) | set(vector_ranks.keys())
+
+    merged_results = []
+    for cid in all_chunk_ids:
+        ref_chunk = fts_map.get(cid) or vector_map.get(cid)
+        if not ref_chunk:
+            continue
+
+        chunk_data = dict(ref_chunk)
+        rrf_score = 0.0
+        if cid in fts_ranks:
+            rrf_score += 1.0 / (60.0 + fts_ranks[cid])
+        if cid in vector_ranks:
+            rrf_score += 1.0 / (60.0 + vector_ranks[cid])
+
+        chunk_data["rrf_score"] = rrf_score
+        chunk_data["similarity_score"] = vector_map.get(cid, {}).get("similarity_score", 0.0)
+        chunk_data["fts_rank"] = fts_ranks.get(cid, None)
+        chunk_data["vector_rank"] = vector_ranks.get(cid, None)
+
+        boost = 1.0
+        sec = (chunk_data.get("section") or "").lower()
+        if "result" in sec:
+            boost = 1.2
+        elif "method" in sec:
+            boost = 1.15
+        elif "discussion" in sec or "conclusion" in sec:
+            boost = 1.1
+
+        chunk_data["hybrid_score"] = rrf_score * boost
+        merged_results.append(chunk_data)
+
+    merged_results.sort(key=lambda x: x["hybrid_score"], reverse=True)
+    return merged_results[:limit]

@@ -8,6 +8,7 @@ import pytest
 
 from knowcran.models import Claim, PaperRecord
 from knowcran.storage import Storage, compute_claim_hash
+from knowcran.workflow import create_output_dir
 
 
 @pytest.fixture
@@ -152,6 +153,12 @@ class TestClaimIdempotency:
         assert claims[0]["extraction_method"] == "claw"
         assert claims[0]["citation_key"] == "Smith2023"
 
+    def test_get_claim_by_primary_key(self, storage, sample_claim):
+        storage.upsert_claim_idempotent(sample_claim)
+        claim = storage.get_claim("claim1")
+        assert claim is not None
+        assert claim["claim_text"] == "ICH has high mortality rates"
+
     def test_repeated_read_topic_no_duplicate_claims(self, storage, sample_paper_record):
         """Test that running read-topic twice does not increase claim count."""
         storage.upsert_paper(sample_paper_record)
@@ -205,3 +212,78 @@ class TestMigration:
         claims = s.get_claims_for_paper("p1")
         assert claims[0]["extraction_method"] == "claw"
         s.close()
+
+    def test_old_papers_table_gets_runtime_columns(self, tmp_path, sample_paper_record):
+        """Opening an old DB with a minimal papers table should allow modern upserts."""
+        db = tmp_path / "old-papers.sqlite"
+        import sqlite3
+        conn = sqlite3.connect(str(db))
+        conn.executescript("""
+            CREATE TABLE papers (paper_id TEXT PRIMARY KEY, title TEXT);
+            CREATE TABLE claims (claim_id TEXT PRIMARY KEY, paper_id TEXT, claim_text TEXT, evidence_type TEXT, confidence REAL, source_location TEXT, topic TEXT, created_at TEXT);
+            CREATE TABLE topic_papers (topic TEXT, paper_id TEXT, source TEXT, relevance_score REAL, created_at TEXT, PRIMARY KEY(topic, paper_id));
+        """)
+        conn.close()
+
+        s = Storage(db_path=db)
+        s.upsert_paper(sample_paper_record)
+        paper = s.get_paper("paper1")
+        assert paper["doi"] == "10.1234/test"
+        assert "open_access_pdf_json" in paper
+        s.close()
+
+
+class TestParsedContentReplacement:
+    def test_delete_parsed_content_for_paper_removes_stale_chunks_and_embeddings(self, storage):
+        storage.conn.execute(
+            """INSERT INTO parsed_documents
+            (paper_id, asset_id, parser_name, parser_version, status, created_at, updated_at)
+            VALUES ('paper1', 'asset1', 'pymupdf', '1.0.0', 'parsed', 'now', 'now')"""
+        )
+        storage.conn.execute(
+            """INSERT INTO parsed_pages
+            (page_id, paper_id, page_idx, page_number, created_at)
+            VALUES ('page1', 'paper1', 0, 1, 'now')"""
+        )
+        storage.conn.execute(
+            """INSERT INTO parsed_elements
+            (element_id, paper_id, page_idx, element_type, text, element_index, created_at)
+            VALUES ('el1', 'paper1', 0, 'paragraph', 'text', 0, 'now')"""
+        )
+        storage.conn.execute(
+            """INSERT INTO paper_chunks
+            (chunk_id, paper_id, page_start, page_end, chunk_index, text, text_hash, token_count, created_at)
+            VALUES ('chunk1', 'paper1', 1, 1, 0, 'text', 'hash', 1, 'now')"""
+        )
+        storage.conn.execute(
+            """INSERT INTO paper_fulltext_chunks
+            (chunk_id, paper_id, asset_id, page_start, page_end, chunk_index, text, text_hash, token_count, created_at)
+            VALUES ('legacy1', 'paper1', 'asset1', 1, 1, 0, 'text', 'hash', 1, 'now')"""
+        )
+        storage.conn.execute(
+            """INSERT INTO chunk_embeddings
+            (chunk_id, embedding_model, embedding, created_at)
+            VALUES ('chunk1', 'model', X'0000', 'now'), ('legacy1', 'model', X'0000', 'now')"""
+        )
+        storage.conn.commit()
+
+        storage.delete_parsed_content_for_paper("paper1")
+
+        for table in [
+            "parsed_documents",
+            "parsed_pages",
+            "parsed_elements",
+            "paper_chunks",
+            "paper_fulltext_chunks",
+            "chunk_embeddings",
+        ]:
+            assert storage.conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] == 0
+
+
+class TestWorkflowOutputSafety:
+    def test_create_output_dir_sanitizes_topic_name(self, tmp_path):
+        output_dir = create_output_dir("../ICH: acute\\phase?", base_dir=tmp_path)
+        assert output_dir.parent == tmp_path
+        assert ".." not in output_dir.name
+        assert ":" not in output_dir.name
+        assert "\\" not in output_dir.name

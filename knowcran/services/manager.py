@@ -17,6 +17,59 @@ from knowcran.services.mineru import MinerUManager
 
 logger = logging.getLogger(__name__)
 
+
+def _openai_base_to_service_root(url: str) -> str:
+    """Return the service root for an OpenAI-compatible base URL."""
+    parsed = urllib.parse.urlparse(url.rstrip("/"))
+    path = parsed.path.rstrip("/")
+    if path == "/v1":
+        parsed = parsed._replace(path="")
+    return urllib.parse.urlunparse(parsed).rstrip("/")
+
+
+def _pid_running(pid: int | str | None) -> bool:
+    if not pid:
+        return False
+    try:
+        pid_int = int(pid)
+    except (TypeError, ValueError):
+        return False
+
+    try:
+        import psutil
+        return psutil.Process(pid_int).is_running()
+    except ImportError:
+        try:
+            os.kill(pid_int, 0)
+            return True
+        except OSError:
+            return False
+    except Exception:
+        return False
+
+
+def _terminate_pid(pid: int | str, timeout: float = 3.0) -> None:
+    pid_int = int(pid)
+    try:
+        import psutil
+        proc = psutil.Process(pid_int)
+        proc.terminate()
+        gone, alive = psutil.wait_procs([proc], timeout=timeout)
+        for p in alive:
+            p.kill()
+        return
+    except ImportError:
+        if os.name == "nt":
+            subprocess.run(["taskkill", "/PID", str(pid_int), "/T", "/F"], check=False, capture_output=True)
+            return
+        try:
+            os.kill(pid_int, 15)
+        except ProcessLookupError:
+            return
+    except Exception:
+        raise
+
+
 def is_port_in_use(port: int, host: str = "127.0.0.1") -> bool:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         try:
@@ -25,17 +78,50 @@ def is_port_in_use(port: int, host: str = "127.0.0.1") -> bool:
         except socket.error:
             return True
 
-def probe_health(url: str, endpoint: str = "") -> bool:
+def probe_health(url: str, endpoint: str = "", timeout: float = 1.5) -> bool:
     probe_url = url.rstrip("/")
     if endpoint:
         probe_url = f"{probe_url}/{endpoint.lstrip('/')}"
     try:
-        # Standard health check endpoint
-        res = httpx.get(probe_url, timeout=1.5)
-        # 200, 404, or 405 implies the HTTP server is alive and responding
-        return res.status_code in (200, 301, 302, 307, 308, 404, 405)
+        res = httpx.get(probe_url, timeout=timeout)
+        return res.status_code in (200, 204, 301, 302, 307, 308)
     except Exception:
         return False
+
+
+def probe_embedding_health(openai_base_url: str) -> bool:
+    """Probe the managed embedding service health endpoint.
+
+    The embedding API base is OpenAI-compatible and usually ends with /v1, while
+    the service health endpoint is mounted at /health on the service root.
+    """
+    return probe_health(_openai_base_to_service_root(openai_base_url), "health")
+
+
+def probe_mineru_health(api_url: str) -> bool:
+    """Probe MinerU without accepting arbitrary HTTP servers as healthy."""
+    root = api_url.rstrip("/")
+    if probe_health(root, "health"):
+        return True
+
+    try:
+        res = httpx.get(f"{root}/openapi.json", timeout=1.5)
+        if res.status_code == 200:
+            spec = res.json()
+            paths = spec.get("paths", {}) if isinstance(spec, dict) else {}
+            if any("file_parse" in path or "parse" in path for path in paths):
+                return True
+    except Exception:
+        pass
+
+    try:
+        res = httpx.get(root, timeout=1.5)
+        if res.status_code == 200 and "mineru" in res.text.lower():
+            return True
+    except Exception:
+        pass
+    return False
+
 
 def get_state_file_path(settings: Settings) -> Path:
     return settings.data_dir / "runtime" / "services.json"
@@ -64,23 +150,14 @@ def get_services_status(settings: Settings) -> Dict[str, Any]:
     
     if settings.embedding_provider == "local":
         if emb_mode == "external":
-            emb_status = "running" if probe_health(emb_url, "health") else "stopped"
+            emb_status = "running" if probe_embedding_health(emb_url) else "stopped"
         elif emb_mode == "managed":
-            is_alive = probe_health(emb_url, "health")
+            is_alive = probe_embedding_health(emb_url)
             state_info = state.get("embedding", {})
             if is_alive:
                 emb_status = "running"
             elif state_info.get("pid"):
-                # Check if process is still alive
-                import psutil
-                try:
-                    p = psutil.Process(state_info["pid"])
-                    if p.is_running():
-                        emb_status = "starting"
-                    else:
-                        emb_status = "stopped"
-                except Exception:
-                    emb_status = "stopped"
+                emb_status = "starting" if _pid_running(state_info["pid"]) else "stopped"
             else:
                 emb_status = "stopped"
     else:
@@ -93,11 +170,11 @@ def get_services_status(settings: Settings) -> Dict[str, Any]:
     
     if settings.pdf_parser == "mineru" or settings.pdf_parser == "auto":
         if mineru_mode == "external":
-            mineru_status = "running" if probe_health(mineru_url) else "stopped"
+            mineru_status = "running" if probe_mineru_health(mineru_url) else "stopped"
         elif mineru_mode == "off":
             mineru_status = "off"
         elif mineru_mode == "managed":
-            is_alive = probe_health(mineru_url)
+            is_alive = probe_mineru_health(mineru_url)
             state_info = state.get("mineru", {})
             if is_alive:
                 mineru_status = "running"
@@ -118,15 +195,7 @@ def get_services_status(settings: Settings) -> Dict[str, Any]:
                 else:
                     mineru_status = "stopped"
             elif state_info.get("pid"):
-                import psutil
-                try:
-                    p = psutil.Process(state_info["pid"])
-                    if p.is_running():
-                        mineru_status = "starting"
-                    else:
-                        mineru_status = "stopped"
-                except Exception:
-                    mineru_status = "stopped"
+                mineru_status = "starting" if _pid_running(state_info["pid"]) else "stopped"
             else:
                 mineru_status = "stopped"
     else:
@@ -175,7 +244,7 @@ def start_services(settings: Settings, gpu: bool = False):
         emb_port = parsed.port or 8010
         
         # Check if already running
-        if probe_health(emb_url, "health"):
+        if probe_embedding_health(emb_url):
             logger.info(f"Local embedding server is already running at {emb_url}. Reusing it.")
         else:
             if is_port_in_use(emb_port, emb_host):
@@ -193,7 +262,8 @@ def start_services(settings: Settings, gpu: bool = False):
                 "--host", emb_host,
                 "--port", str(emb_port),
                 "--model", settings.local_embedding_model,
-                "--device", settings.local_embedding_device
+                "--device", settings.local_embedding_device,
+                "--batch-size", str(settings.local_embedding_batch_size),
             ]
             
             logger.info(f"Starting managed local embedding server: {' '.join(cmd)}")
@@ -204,6 +274,7 @@ def start_services(settings: Settings, gpu: bool = False):
             env = os.environ.copy()
             env["MNEMOSYNE_LOCAL_EMBEDDING_MODEL"] = settings.local_embedding_model
             env["MNEMOSYNE_LOCAL_EMBEDDING_DEVICE"] = settings.local_embedding_device
+            env["MNEMOSYNE_LOCAL_EMBEDDING_BATCH_SIZE"] = str(settings.local_embedding_batch_size)
             
             proc = subprocess.Popen(
                 cmd,
@@ -216,8 +287,9 @@ def start_services(settings: Settings, gpu: bool = False):
             # Wait for startup
             logger.info("Waiting for local embedding server to become responsive...")
             success = False
-            for _ in range(30):
-                if probe_health(emb_url, "health"):
+            startup_timeout = max(1, int(settings.local_embedding_startup_timeout_seconds))
+            for _ in range(startup_timeout):
+                if probe_embedding_health(emb_url):
                     success = True
                     break
                 time.sleep(1)
@@ -226,7 +298,7 @@ def start_services(settings: Settings, gpu: bool = False):
                 # Terminate on timeout
                 proc.terminate()
                 raise RuntimeError(
-                    "Local embedding server failed to respond within 30 seconds. "
+                    f"Local embedding server failed to respond within {startup_timeout} seconds. "
                     f"Check logs in {log_file} for details."
                 )
                 
@@ -246,7 +318,7 @@ def start_services(settings: Settings, gpu: bool = False):
         mineru_host = parsed.hostname or "127.0.0.1"
         mineru_port = parsed.port or 8000
         
-        if probe_health(mineru_url):
+        if probe_mineru_health(mineru_url):
             logger.info(f"MinerU API is already running at {mineru_url}. Reusing it.")
         else:
             if is_port_in_use(mineru_port, mineru_host):
@@ -271,10 +343,11 @@ def start_services(settings: Settings, gpu: bool = False):
             else:
                 raise ValueError(f"Unknown MinerU backend: {settings.mineru_backend}")
                 
-            logger.info("Waiting for MinerU API to become responsive (this may take up to 90 seconds for model loading)...")
+            startup_timeout = max(1, int(settings.mineru_startup_timeout_seconds))
+            logger.info(f"Waiting for MinerU API to become responsive (timeout: {startup_timeout}s)...")
             success = False
-            for _ in range(90):
-                if probe_health(mineru_url):
+            for _ in range(startup_timeout):
+                if probe_mineru_health(mineru_url):
                     success = True
                     break
                 time.sleep(1)
@@ -285,7 +358,7 @@ def start_services(settings: Settings, gpu: bool = False):
                     manager.stop_docker()
                 elif pid:
                     manager.stop_subprocess(pid)
-                raise RuntimeError("MinerU API server failed to respond within 90 seconds.")
+                raise RuntimeError(f"MinerU API server failed to respond within {startup_timeout} seconds.")
                 
             logger.info("MinerU API is online.")
             state["mineru"] = {
@@ -306,15 +379,10 @@ def stop_services(settings: Settings):
     emb_info = state.get("embedding", {})
     if emb_info.get("mode") == "managed" and emb_info.get("pid"):
         pid = emb_info["pid"]
-        import psutil
         logger.info(f"Stopping managed local embedding server (PID {pid})...")
         try:
-            proc = psutil.Process(pid)
-            proc.terminate()
-            gone, alive = psutil.wait_procs([proc], timeout=3)
-            for p in alive:
-                p.kill()
-        except psutil.NoSuchProcess:
+            _terminate_pid(pid)
+        except ProcessLookupError:
             pass
         except Exception as e:
             logger.error(f"Error stopping embedding server: {e}")

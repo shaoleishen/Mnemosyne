@@ -24,6 +24,8 @@ python -m pip install build
 python -m build
 ```
 
+If you use `uv` for local development or MCP launch configs, refresh and verify `uv.lock` after dependency changes before cutting a release.
+
 Or use the release verification helper:
 
 ```bash

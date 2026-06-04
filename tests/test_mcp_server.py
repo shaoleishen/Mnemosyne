@@ -149,6 +149,12 @@ class TestMCPTools:
         assert "knowcran_repair_metadata" not in curate
         assert "knowcran_repair_metadata" in admin
 
+    def test_run_topic_schema_exposes_cli_controls(self):
+        tool = next(t for t in get_all_tools() if t["name"] == "knowcran_run_topic")
+        props = tool["inputSchema"]["properties"]
+        for name in ["fulltext", "skip_discover", "skip_download", "skip_parse", "skip_review", "gpu"]:
+            assert name in props
+
 
 class TestMCPToolCalls:
     def test_stats(self, data_dir_with_data):
@@ -175,6 +181,12 @@ class TestMCPToolCalls:
         assert "evidence_matrix" in result
         assert result["claim_count"] == 1
         assert "has_abstract_only_evidence" in result
+
+    def test_get_evidence_context_by_claim_id(self, data_dir_with_data):
+        result = handle_tool_call("knowcran_get_evidence_context", {"claim_id": "c1", "data_dir": str(data_dir_with_data)})
+        assert result["claim"]["claim_id"] == "c1"
+        assert result["paper"]["paper_id"] == "p1"
+        assert result["evidence_status"] == "abstract_only"
 
     def test_bibliography(self, data_dir_with_data):
         result = handle_tool_call("knowcran_get_bibliography", {"topic": "ICH", "data_dir": str(data_dir_with_data)})
@@ -225,6 +237,14 @@ class TestMCPToolCalls:
             "paper_id": "p1",
             "data_dir": str(data_dir_with_data),
         }, profile="curate")
+        assert "error" in result
+        assert "not allowed" in result["error"]
+
+    def test_legacy_write_tool_blocked_in_readonly_profile(self, data_dir_with_data):
+        result = handle_tool_call("mnemosyne_discover", {
+            "topic": "ICH",
+            "data_dir": str(data_dir_with_data),
+        }, profile="readonly")
         assert "error" in result
         assert "not allowed" in result["error"]
 

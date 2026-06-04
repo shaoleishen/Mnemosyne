@@ -80,6 +80,17 @@ class BulkExecutor:
         self.fallback_provider = fallback_provider
         self.storage = storage
 
+        # Start a background heartbeat thread to prevent agent idle timeouts during long API calls
+        import threading
+        import sys
+        def _heartbeat():
+            while True:
+                time.sleep(10)
+                sys.stdout.write("[heartbeat]\n")
+                sys.stdout.flush()
+        t = threading.Thread(target=_heartbeat, daemon=True)
+        t.start()
+
     def _get_chunk_size(self, task_type: str) -> int:
         sizes = {
             "relevance_rerank": self.config.rerank_chunk_size,
@@ -286,8 +297,7 @@ class BulkExecutor:
                         error=str(e),
                     )
                 completed += 1
-                if completed % 5 == 0 or completed == len(tasks):
-                    console.print(f"  {label} progress: {completed}/{len(tasks)}")
+                console.print(f"  {label} progress: {completed}/{len(tasks)}")
 
         return results
 
@@ -350,8 +360,7 @@ class BulkExecutor:
                         paper,
                     )
                 completed += 1
-                if completed % 10 == 0 or completed == len(tasks):
-                    console.print(f"  {label} progress: {completed}/{len(tasks)}")
+                console.print(f"  {label} progress: {completed}/{len(tasks)}")
 
         return results
 

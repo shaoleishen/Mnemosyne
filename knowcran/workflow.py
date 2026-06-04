@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import csv
 import json
+import logging
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -16,11 +17,15 @@ from typing import Any
 from knowcran.config import Settings
 from knowcran.storage import Storage
 
+logger = logging.getLogger(__name__)
+
 
 def create_output_dir(topic: str, base_dir: Path | None = None) -> Path:
     """Create a timestamped output directory for a topic run."""
+    from knowcran.utils import slugify
+
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-    slug = topic.lower().replace(" ", "_").replace("/", "_")[:50]
+    slug = slugify(topic, max_len=50) or "topic"
     dir_name = f"{slug}_{timestamp}"
     output_dir = (base_dir or Path("mnemosyne_output")) / dir_name
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -109,6 +114,17 @@ def generate_evidence_matrix_csv(
     output_dir: Path,
 ) -> Path:
     """Generate a CSV evidence matrix."""
+    claims_dicts = []
+    for c in claims:
+        if hasattr(c, "model_dump"):
+            claims_dicts.append(c.model_dump())
+        elif hasattr(c, "dict"):
+            claims_dicts.append(c.dict())
+        elif isinstance(c, dict):
+            claims_dicts.append(c)
+        else:
+            claims_dicts.append(vars(c))
+
     csv_path = output_dir / "evidence_matrix.csv"
     with open(csv_path, "w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
@@ -116,7 +132,7 @@ def generate_evidence_matrix_csv(
             "paper_id", "title", "year", "claim_text", "evidence_type",
             "confidence", "evidence_status", "source_location", "citation_key",
         ])
-        for c in claims:
+        for c in claims_dicts:
             paper = papers.get(c.get("paper_id", ""), {})
             writer.writerow([
                 c.get("paper_id", ""),
@@ -139,13 +155,24 @@ def generate_topic_summary(
     output_dir: Path,
 ) -> Path:
     """Generate a topic summary markdown file."""
+    claims_dicts = []
+    for c in claims:
+        if hasattr(c, "model_dump"):
+            claims_dicts.append(c.model_dump())
+        elif hasattr(c, "dict"):
+            claims_dicts.append(c.dict())
+        elif isinstance(c, dict):
+            claims_dicts.append(c)
+        else:
+            claims_dicts.append(vars(c))
+
     md_path = output_dir / "topic_summary.md"
     lines = [
         f"# Topic Summary: {topic}\n",
         f"Generated: {datetime.now(timezone.utc).isoformat()}\n",
         f"## Statistics\n",
         f"- Papers: {len(papers)}",
-        f"- Claims: {len(claims)}",
+        f"- Claims: {len(claims_dicts)}",
         "",
         "## Papers\n",
     ]
@@ -156,7 +183,7 @@ def generate_topic_summary(
 
     lines.append("\n## Claim Distribution\n")
     type_counts: dict[str, int] = {}
-    for c in claims:
+    for c in claims_dicts:
         etype = c.get("evidence_type", "unknown")
         type_counts[etype] = type_counts.get(etype, 0) + 1
     for etype, count in sorted(type_counts.items()):
@@ -280,7 +307,33 @@ def run_topic_workflow(
 
         # Step 4: Extract claims (fulltext or abstract)
         from knowcran.reading import read_topic
-        claims = read_topic(canonical_topic, limit=limit, storage=storage, fulltext=fulltext)
+        from knowcran.agents.registry import get_registry
+        from knowcran.llm.factory import create_provider
+
+        agent_provider = None
+        try:
+            registry = get_registry()
+            default = registry.get()
+            if default.name != "deterministic":
+                agent_provider = default
+        except Exception as e:
+            logger.warning(f"Failed to auto-detect agent provider: {e}")
+
+        llm_provider = None
+        if agent_provider is None:
+            try:
+                llm_provider = create_provider(settings)
+            except Exception as e:
+                logger.warning(f"Failed to create LLM provider: {e}")
+
+        claims = read_topic(
+            canonical_topic,
+            limit=limit,
+            storage=storage,
+            llm_provider=llm_provider,
+            agent_provider=agent_provider,
+            fulltext=fulltext,
+        )
         ft_count = sum(1 for c in claims if c.evidence_status == "full_text_reviewed")
         abstract_count = len(claims) - ft_count
         result["steps"]["extract"] = {

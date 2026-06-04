@@ -20,7 +20,7 @@ class SemanticScholarSource(SourceBase):
     _API_URL = "https://api.semanticscholar.org/graph/v1/paper/DOI:{doi}?fields=openAccessPdf"
 
     def fetch(self, doi: str | None, arxiv_id: str | None,
-              title: str | None = None) -> tuple[bytes | None, str | None]:
+              title: str | None = None, pmid: str | None = None) -> tuple[bytes | None, str | None]:
         if not doi:
             return None, "No DOI"
         api_url = self._API_URL.format(doi=doi)

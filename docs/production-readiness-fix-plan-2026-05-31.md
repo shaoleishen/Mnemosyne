@@ -2,6 +2,10 @@
 
 Date: 2026-05-31
 
+> This document is a historical implementation/audit plan. The current 1.0.0
+> release-candidate README, release checklist, and changelog are authoritative
+> for the present release scope.
+
 This plan upgrades the current Mnemosyne / KnowCran 1.1.0 PDF knowledge-base implementation from a prototype into a production-usable local research system. The immediate goal is to make the advertised full-text workflow actually work end to end: discover papers, download PDFs, parse them, extract full-text claims with provenance, search the local full text, generate notes and reviews, and expose reliable read tools to Codex or other MCP clients.
 
 ## Scope

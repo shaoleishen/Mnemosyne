@@ -34,7 +34,7 @@ class PublishersSource(SourceBase):
     ]
 
     def fetch(self, doi: str | None, arxiv_id: str | None,
-              title: str | None = None) -> tuple[bytes | None, str | None]:
+              title: str | None = None, pmid: str | None = None) -> tuple[bytes | None, str | None]:
         if not doi:
             return None, "No DOI"
         # Try to resolve DOI to get publisher page

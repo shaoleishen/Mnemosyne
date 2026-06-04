@@ -40,6 +40,13 @@ def download_paper_pdf(
     settings = settings or Settings()
     storage = storage or Storage(settings.db_path)
 
+    if not settings.pdf_download_enabled:
+        return {
+            "success": False,
+            "paper_id": paper_id,
+            "error": "PDF download workflow is disabled by MNEMOSYNE_PDF_DOWNLOAD_ENABLED=false",
+        }
+
     paper = storage.get_paper(paper_id)
     if not paper:
         return {"success": False, "error": f"Paper not found: {paper_id}"}
@@ -63,6 +70,7 @@ def download_paper_pdf(
     doi = paper.get("doi")
     arxiv_id = paper.get("arxiv_id")
     title = paper.get("title")
+    pmid = paper.get("pmid")
 
     # Try to get open access PDF URL from metadata
     oa_pdf_url = None
@@ -87,7 +95,7 @@ def download_paper_pdf(
             if valid:
                 # Store in cache
                 cache = PDFCache(settings.pdf_dir)
-                filename = safe_filename(title or "", doi)
+                filename = safe_filename(title or "", doi=doi, arxiv_id=arxiv_id, fallback=paper_id)
                 file_path = str(cache.store(data, filename))
                 sha256 = compute_sha256(data)
 
@@ -123,10 +131,12 @@ def download_paper_pdf(
         arxiv_id=arxiv_id,
         title=title,
         paper_id=paper_id,
+        pmid=pmid,
         strategy=strategy,
         pdf_dir=str(settings.pdf_dir),
         scihub_enabled=settings.scihub_enabled,
         libgen_enabled=settings.libgen_enabled,
+        max_workers=settings.pdf_batch_workers,
         force=force,
     )
 
@@ -214,11 +224,19 @@ def download_topic_pdfs(
     if not papers:
         return results
 
-    with ThreadPoolExecutor(max_workers=5) as executor:
+    if not settings.pdf_download_enabled:
+        results["status"] = "disabled"
+        results["message"] = "PDF download workflow is disabled by MNEMOSYNE_PDF_DOWNLOAD_ENABLED=false"
+        results["skipped"] = len(papers)
+        return results
+
+    max_workers = max(1, settings.pdf_batch_workers)
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = {
             executor.submit(_download_paper_worker, paper["paper_id"], strategy, settings): paper
             for paper in papers
         }
+        completed = 0
         for future in as_completed(futures):
             paper = futures[future]
             try:
@@ -238,6 +256,8 @@ def download_topic_pdfs(
                     "paper_id": paper["paper_id"],
                     "error": f"Download thread raised exception: {e}"
                 })
+            completed += 1
+            print(f"  PDF download progress: {completed}/{len(papers)}")
 
     return results
 
@@ -311,8 +331,8 @@ def parse_paper_pdf(
     parser_type = settings.pdf_parser
     degraded_reason = None
     if parser_type == "auto":
-        from knowcran.services.manager import probe_health
-        if probe_health(settings.mineru_api_url):
+        from knowcran.services.manager import probe_mineru_health
+        if probe_mineru_health(settings.mineru_api_url):
             logger.info("MinerU API is responsive. Selecting 'mineru' parser under 'auto' strategy.")
             parser_type = "mineru"
         else:
@@ -368,6 +388,8 @@ def parse_paper_pdf(
             )
 
     if parsed_doc.status == "parsed":
+        storage.delete_parsed_content_for_paper(paper_id)
+
         # Store layout components
         storage.insert_parsed_document(
             paper_id=parsed_doc.paper_id,
@@ -381,6 +403,67 @@ def parse_paper_pdf(
         )
         storage.insert_parsed_pages([p.to_dict() for p in parsed_doc.pages])
         storage.insert_parsed_elements([e.to_dict() for e in parsed_doc.elements])
+
+        # --- Media extraction: figure/table screenshots + Vision API ---
+        media_assets = []
+        media_descriptions = []
+        try:
+            from knowcran.media.extract import extract_media_assets_from_elements
+            from knowcran.media.linker import link_media_mentions
+
+            pdf_path = Path(downloaded["file_path"])
+            output_dir = settings.data_dir / "runtime" / "media" / paper_id
+
+            media_assets = extract_media_assets_from_elements(
+                doc=parsed_doc,
+                output_dir=output_dir,
+                pdf_path=pdf_path if pdf_path.exists() else None,
+            )
+
+            if media_assets:
+                # Store media assets
+                storage.insert_parsed_media_assets([a.to_dict() for a in media_assets])
+                logger.info(f"Extracted {len(media_assets)} media assets for paper {paper_id}")
+
+                # Link media mentions in text elements
+                text_elements = [e for e in parsed_doc.elements
+                                if e.element_type not in ("figure", "table", "image")]
+                mentions = link_media_mentions(media_assets, text_elements)
+                if mentions:
+                    storage.insert_media_mentions([m.to_dict() for m in mentions])
+                    logger.info(f"Linked {len(mentions)} media mentions for paper {paper_id}")
+
+                # Vision API: describe each figure/table
+                vision_router = settings.get_vision_router()
+                if vision_router:
+                    for asset in media_assets:
+                        if not asset.image_path or not Path(asset.image_path).exists():
+                            continue
+                        try:
+                            result = vision_router.describe_media(
+                                image_path=asset.image_path,
+                                task_type="describe_media",
+                            )
+                            if result.get("status") == "success":
+                                storage.insert_media_vlm_description(
+                                    description_id=str(uuid.uuid4()),
+                                    media_id=asset.media_id,
+                                    provider=result.get("provider", "unknown"),
+                                    model=result.get("model", "unknown"),
+                                    description_text=result.get("description", ""),
+                                    source_type=result.get("source_type", "auxiliary_interpretation"),
+                                    status="success",
+                                )
+                                media_descriptions.append({
+                                    "media_id": asset.media_id,
+                                    "provider": result.get("provider"),
+                                    "description": result.get("description", "")[:200],
+                                })
+                                logger.info(f"Vision described {asset.figure_label or asset.media_id[:8]}")
+                        except Exception as e:
+                            logger.warning(f"Vision API failed for {asset.media_id}: {e}")
+        except Exception as e:
+            logger.warning(f"Media extraction failed for paper {paper_id}: {e}")
 
         # Chunk elements
         from knowcran.parsers.chunker import chunk_elements
@@ -403,6 +486,8 @@ def parse_paper_pdf(
         storage.insert_fulltext_chunks(legacy_chunks)
 
         # Generate chunk embeddings
+        embedding_status = "skipped"
+        embedding_error = None
         from knowcran.embeddings import EmbeddingProvider, vector_to_bytes
         provider = EmbeddingProvider(settings)
         chunk_texts = [c["text"] for c in chunks]
@@ -417,7 +502,10 @@ def parse_paper_pdf(
                     "embedding": emb_bytes,
                 })
             storage.insert_chunk_embeddings(emb_dicts)
+            embedding_status = "completed"
         except Exception as e:
+            embedding_status = "failed"
+            embedding_error = str(e)
             logger.error(f"Failed to generate embeddings for parsed chunks: {e}")
 
         # Sync FTS index
@@ -433,6 +521,13 @@ def parse_paper_pdf(
             "chunk_count": len(chunks),
             "status": parsed_doc.status,
             "error": parsed_doc.error,
+            "parser": parsed_doc.parser_name,
+            "degraded_reason": degraded_reason,
+            "embedding_status": embedding_status,
+            "embedding_error": embedding_error,
+            "media_assets_extracted": len(media_assets),
+            "media_descriptions_generated": len(media_descriptions),
+            "media_details": media_descriptions,
         }
 
     return {
@@ -483,7 +578,7 @@ def parse_topic_pdfs(
         return results
 
     # Respect configured MinerU workers concurrency to prevent GPU OOM (RTX 3070 8GB VRAM limit)
-    max_workers = settings.mineru_workers if settings.pdf_parser in ("mineru", "auto") else 3
+    max_workers = max(1, settings.mineru_workers) if settings.pdf_parser in ("mineru", "auto") else 3
     if settings.mineru_gpu and max_workers > 1:
         logger.warning(
             f"GPU acceleration is active. Capping parsing workers from {max_workers} to 1 "
@@ -496,6 +591,7 @@ def parse_topic_pdfs(
             executor.submit(_parse_paper_worker, paper["paper_id"], settings): paper
             for paper in papers
         }
+        completed = 0
         for future in as_completed(futures):
             paper = futures[future]
             try:
@@ -515,6 +611,8 @@ def parse_topic_pdfs(
                     "paper_id": paper["paper_id"],
                     "error": f"Parse thread raised exception: {e}"
                 })
+            completed += 1
+            print(f"  PDF parse progress: {completed}/{len(papers)}")
 
     return results
 
@@ -685,3 +783,261 @@ def hybrid_search_chunks(
     # we recommend migrating the dense embedding search to a dedicated vector index
     # like pgvector, ChromaDB, or DuckDB vss.
     return HybridSearchResult(merged_results[:limit], degraded_reason=degraded_reason)
+
+
+def fts_prefiltered_hybrid_search(
+    query: str,
+    topic: str | None = None,
+    paper_id: str | None = None,
+    limit: int = 20,
+    fts_limit: int = 100,
+    storage: Storage | None = None,
+    settings: Settings | None = None,
+) -> list[dict[str, Any]]:
+    """FTS-prefiltered hybrid search for memory-efficient retrieval.
+
+    This approach:
+    1. Searches FTS5 over text chunks and media index text
+    2. Selects top candidate IDs only (fts_limit)
+    3. Uses the existing EmbeddingProvider to embed the query
+    4. Loads embeddings only for candidate chunks/media index entries
+    5. Reranks candidates using RRF
+
+    This avoids loading all stored embedding BLOBs into memory during query.
+
+    Args:
+        query: Search query text
+        topic: Optional topic filter
+        paper_id: Optional paper ID filter
+        limit: Maximum number of results to return
+        fts_limit: Maximum number of FTS candidates to pre-filter
+        storage: Storage instance
+        settings: Settings instance
+
+    Returns:
+        HybridSearchResult with reranked results and degraded_reason metadata
+    """
+    settings = settings or Settings()
+    storage = storage or Storage(settings.db_path)
+
+    degraded_reason = None
+    query_vector = []
+
+    # 1. Generate query embedding
+    from knowcran.embeddings import EmbeddingProvider, bytes_to_vector
+    provider = EmbeddingProvider(settings)
+    try:
+        query_vector = provider.embed_texts([query])[0]
+    except Exception as e:
+        logger.error(f"Failed to generate query embedding: {e}")
+        degraded_reason = f"Embedding generation failed: {e}"
+        query_vector = []
+
+    if query_vector:
+        try:
+            count = storage.conn.execute(
+                "SELECT count(*) FROM chunk_embeddings WHERE embedding_model = ?",
+                (provider.model,)
+            ).fetchone()[0]
+            if count == 0:
+                degraded_reason = f"No chunk embeddings found for model {provider.model}. Search degraded to FTS5."
+        except Exception as e:
+            degraded_reason = f"Failed to check chunk embeddings count: {e}"
+
+    # 2. FTS5 BM25 search - get candidate IDs
+    fts_results = storage.search_fulltext(query, topic=topic, paper_id=paper_id, limit=fts_limit)
+    if not fts_results:
+        return HybridSearchResult([], degraded_reason=degraded_reason)
+
+    fts_ranks = {res["chunk_id"]: idx + 1 for idx, res in enumerate(fts_results)}
+    fts_map = {res["chunk_id"]: res for res in fts_results}
+    candidate_ids = list(fts_ranks.keys())
+
+    # 3. Load embeddings only for FTS candidates
+    vector_candidates = []
+    if query_vector and candidate_ids:
+        # Build placeholders for IN clause
+        placeholders = ",".join("?" * len(candidate_ids))
+        rows = storage.conn.execute(
+            f"""SELECT c.chunk_id, c.paper_id, c.page_start, c.page_end, c.section,
+                       c.chunk_index, c.text, p.title, p.year, p.doi, e.embedding
+                FROM chunk_embeddings e
+                INNER JOIN paper_chunks c ON e.chunk_id = c.chunk_id
+                INNER JOIN papers p ON c.paper_id = p.paper_id
+                WHERE c.chunk_id IN ({placeholders}) AND e.embedding_model = ?""",
+            (*candidate_ids, provider.model),
+        ).fetchall()
+
+        for r in rows:
+            chunk_dict = dict(r)
+            emb_bytes = chunk_dict.pop("embedding")
+            chunk_vector = bytes_to_vector(emb_bytes)
+
+            sim = 0.0
+            if len(query_vector) == len(chunk_vector) and len(query_vector) > 0:
+                dot_prod = sum(x * y for x, y in zip(query_vector, chunk_vector))
+                norm_q = sum(x * x for x in query_vector) ** 0.5
+                norm_c = sum(x * x for x in chunk_vector) ** 0.5
+                if norm_q > 0.0 and norm_c > 0.0:
+                    sim = dot_prod / (norm_q * norm_c)
+
+            chunk_dict["similarity_score"] = sim
+            vector_candidates.append(chunk_dict)
+
+    vector_candidates.sort(key=lambda x: x["similarity_score"], reverse=True)
+    vector_ranks = {c["chunk_id"]: idx + 1 for idx, c in enumerate(vector_candidates)}
+    vector_map = {c["chunk_id"]: c for c in vector_candidates}
+
+    # 4. RRF Merging & Section Boosting
+    all_chunk_ids = set(fts_ranks.keys()) | set(vector_ranks.keys())
+
+    merged_results = []
+    for cid in all_chunk_ids:
+        ref_chunk = fts_map.get(cid) or vector_map.get(cid)
+        if not ref_chunk:
+            continue
+
+        chunk_data = dict(ref_chunk)
+        rrf_score = 0.0
+        if cid in fts_ranks:
+            rrf_score += 1.0 / (60.0 + fts_ranks[cid])
+        if cid in vector_ranks:
+            rrf_score += 1.0 / (60.0 + vector_ranks[cid])
+
+        chunk_data["rrf_score"] = rrf_score
+        chunk_data["similarity_score"] = vector_map.get(cid, {}).get("similarity_score", 0.0)
+        chunk_data["fts_rank"] = fts_ranks.get(cid, None)
+        chunk_data["vector_rank"] = vector_ranks.get(cid, None)
+
+        # Section boosting
+        boost = 1.0
+        sec = (chunk_data.get("section") or "").lower()
+        if "result" in sec:
+            boost = 1.2
+        elif "method" in sec:
+            boost = 1.15
+        elif "discussion" in sec or "conclusion" in sec:
+            boost = 1.1
+
+        chunk_data["hybrid_score"] = rrf_score * boost
+        merged_results.append(chunk_data)
+
+    merged_results.sort(key=lambda x: x["hybrid_score"], reverse=True)
+
+    return HybridSearchResult(merged_results[:limit], degraded_reason=degraded_reason)
+
+
+def multimodal_search(
+    query: str,
+    topic: str | None = None,
+    paper_id: str | None = None,
+    limit: int = 20,
+    fts_limit: int = 100,
+    storage: Storage | None = None,
+    settings: Settings | None = None,
+) -> dict[str, Any]:
+    """Multimodal search combining text chunks and media assets.
+
+    This function:
+    1. Performs FTS-prefiltered hybrid search on text chunks
+    2. Searches media index text (captions, VLM descriptions, table Markdown)
+    3. Combines and reranks results
+
+    Args:
+        query: Search query text
+        topic: Optional topic filter
+        paper_id: Optional paper ID filter
+        limit: Maximum number of results
+        fts_limit: FTS prefilter limit
+        storage: Storage instance
+        settings: Settings instance
+
+    Returns:
+        Dict with:
+            - chunks: List of text chunk results
+            - media: List of media asset results
+            - degraded_reason: Degradation reason if any
+    """
+    settings = settings or Settings()
+    storage = storage or Storage(settings.db_path)
+
+    # 1. Search text chunks
+    chunk_results = fts_prefiltered_hybrid_search(
+        query=query,
+        topic=topic,
+        paper_id=paper_id,
+        limit=limit,
+        fts_limit=fts_limit,
+        storage=storage,
+        settings=settings,
+    )
+
+    # 2. Search media assets by caption text and VLM descriptions
+    media_results = []
+    try:
+        # Search in caption_text
+        if topic:
+            canonical_topic = storage.resolve_topic(topic)
+            media_rows = storage.conn.execute(
+                """SELECT m.*, p.title, p.year, p.doi
+                   FROM parsed_media_assets m
+                   INNER JOIN papers p ON m.paper_id = p.paper_id
+                   INNER JOIN topic_papers tp ON m.paper_id = tp.paper_id
+                   WHERE tp.topic = ? AND m.caption_text LIKE ?
+                   ORDER BY m.page_number
+                   LIMIT ?""",
+                (canonical_topic, f"%{query}%", limit),
+            ).fetchall()
+        elif paper_id:
+            media_rows = storage.conn.execute(
+                """SELECT m.*, p.title, p.year, p.doi
+                   FROM parsed_media_assets m
+                   INNER JOIN papers p ON m.paper_id = p.paper_id
+                   WHERE m.paper_id = ? AND m.caption_text LIKE ?
+                   ORDER BY m.page_number
+                   LIMIT ?""",
+                (paper_id, f"%{query}%", limit),
+            ).fetchall()
+        else:
+            media_rows = storage.conn.execute(
+                """SELECT m.*, p.title, p.year, p.doi
+                   FROM parsed_media_assets m
+                   INNER JOIN papers p ON m.paper_id = p.paper_id
+                   WHERE m.caption_text LIKE ?
+                   ORDER BY m.page_number
+                   LIMIT ?""",
+                (f"%{query}%", limit),
+            ).fetchall()
+
+        for row in media_rows:
+            media_dict = dict(row)
+            media_dict["source_type"] = "original_media"
+            media_dict["match_type"] = "caption"
+            media_results.append(media_dict)
+
+        # Also search VLM descriptions
+        vlm_rows = storage.conn.execute(
+            """SELECT v.*, m.media_type, m.figure_label, m.image_path, m.page_number,
+                      p.title, p.year, p.doi
+               FROM media_vlm_descriptions v
+               INNER JOIN parsed_media_assets m ON v.media_id = m.media_id
+               INNER JOIN papers p ON m.paper_id = p.paper_id
+               WHERE v.description_text LIKE ? AND v.status = 'success'
+               LIMIT ?""",
+            (f"%{query}%", limit),
+        ).fetchall()
+
+        for row in vlm_rows:
+            media_dict = dict(row)
+            media_dict["source_type"] = "auxiliary_interpretation"
+            media_dict["match_type"] = "vlm_description"
+            media_results.append(media_dict)
+
+    except Exception as e:
+        logger.warning(f"Media search failed: {e}")
+
+    return {
+        "chunks": list(chunk_results),
+        "media": media_results[:limit],
+        "degraded_reason": chunk_results.degraded_reason if hasattr(chunk_results, "degraded_reason") else None,
+    }

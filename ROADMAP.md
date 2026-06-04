@@ -8,6 +8,7 @@ This roadmap tracks what should happen after the 1.0.0 production baseline.
 - Improve MCP protocol smoke tests for real stdio handshakes.
 - Harden path validation tests for Windows drive boundaries and symlink escapes.
 - Improve migration tests for databases created by earlier local versions.
+- Harden local PDF ingestion, MinerU fallback behavior, and local embedding degraded-mode reporting.
 - Publish signed GitHub releases with source distributions and wheels.
 
 ## 1.1 Evidence Quality
@@ -23,11 +24,11 @@ This roadmap tracks what should happen after the 1.0.0 production baseline.
 - Add DOI, PMID, and arXiv import workflows.
 - Improve BibTeX escaping and duplicate citation-key resolution.
 
-## 1.3 Full Text
+## 1.3 Full Text Quality
 
-- Add optional PDF ingestion behind explicit user-controlled workflows.
-- Track full-text-reviewed claims separately from abstract-only claims.
-- Add extraction provenance for pages, sections, and source spans.
+- Improve OCR/scanned-PDF handling and status reporting.
+- Add richer extraction provenance for equations, figures, tables, pages, sections, and source spans.
+- Add optional vector-index backends for larger local collections.
 
 ## Not In Scope
 

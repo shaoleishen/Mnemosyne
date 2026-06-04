@@ -18,6 +18,7 @@ from typing import Any, Literal
 from mcp.server.fastmcp import FastMCP
 
 from knowcran import __version__
+from knowcran.config import Settings
 from knowcran.security import resolve_allowed_data_dir, resolve_allowed_vault_dir
 from knowcran.server.tools import get_read_only_tools, get_all_tools, get_admin_profile_tools
 
@@ -71,6 +72,13 @@ def _get_storage(data_dir: str | None = None):
     from knowcran.storage import Storage
     db_path = _resolve_db_path(data_dir)
     return Storage(db_path=db_path) if db_path else Storage()
+
+
+def _settings_from_params(params: dict[str, Any]) -> Settings:
+    """Build Settings from MCP params after applying path boundary checks."""
+    data_dir = resolve_allowed_data_dir(params.get("data_dir"))
+    vault_dir = resolve_allowed_vault_dir(params.get("vault_dir"))
+    return Settings(data_dir=data_dir, vault_dir=vault_dir)
 
 
 # ---------------------------------------------------------------------------
@@ -545,6 +553,7 @@ def _handle_dedupe_claims(params: dict[str, Any]) -> dict[str, Any]:
 def _handle_search_fulltext(params: dict[str, Any]) -> dict[str, Any]:
     """Search fulltext chunks using FTS5."""
     from knowcran.fulltext import search_fulltext as do_search
+    settings = _settings_from_params(params)
     storage = _get_storage(params.get("data_dir"))
     try:
         results = do_search(
@@ -553,6 +562,7 @@ def _handle_search_fulltext(params: dict[str, Any]) -> dict[str, Any]:
             paper_id=params.get("paper_id"),
             limit=params.get("limit", 20),
             storage=storage,
+            settings=settings,
         )
         return {
             "results": results,
@@ -566,12 +576,14 @@ def _handle_search_fulltext(params: dict[str, Any]) -> dict[str, Any]:
 def _handle_get_pdf_status(params: dict[str, Any]) -> dict[str, Any]:
     """Get PDF download status."""
     from knowcran.fulltext import get_pdf_status as do_status
+    settings = _settings_from_params(params)
     storage = _get_storage(params.get("data_dir"))
     try:
         return do_status(
             topic=params.get("topic"),
             paper_id=params.get("paper_id"),
             storage=storage,
+            settings=settings,
         )
     finally:
         storage.close()
@@ -603,31 +615,35 @@ def _handle_get_evidence_context(params: dict[str, Any]) -> dict[str, Any]:
     storage = _get_storage(params.get("data_dir"))
     try:
         claim_id = params["claim_id"]
-        # Search for claim across all topics
-        for topic in storage.get_canonical_topics():
-            claims = storage.get_claims_by_topic(topic)
-            for claim in claims:
-                if claim.get("claim_id") == claim_id:
-                    # Get chunk if available
-                    chunk = None
-                    chunk_id = None
-                    source_span = claim.get("source_span_json")
-                    if source_span:
-                        try:
-                            import json
-                            span = json.loads(source_span) if isinstance(source_span, str) else source_span
-                            chunk_id = span.get("chunk_id")
-                        except (json.JSONDecodeError, TypeError):
-                            pass
-                    if chunk_id:
-                        chunk = storage.get_chunk(chunk_id)
+        claim = storage.get_claim(claim_id)
+        if claim:
+            chunk = None
+            chunk_id = None
+            span = None
+            source_span = claim.get("source_span_json")
+            if source_span:
+                try:
+                    span = json.loads(source_span) if isinstance(source_span, str) else source_span
+                    if isinstance(span, dict):
+                        chunk_id = span.get("chunk_id")
+                except (json.JSONDecodeError, TypeError):
+                    span = None
+            if chunk_id:
+                chunk = storage.get_chunk(chunk_id)
 
-                    return {
-                        "claim": claim,
-                        "chunk": chunk,
-                        "source_quote": claim.get("source_quote"),
-                        "evidence_status": claim.get("evidence_status", "abstract_only"),
-                    }
+            paper = storage.get_paper(claim.get("paper_id")) if claim.get("paper_id") else None
+            assets = storage.get_assets_for_paper(claim.get("paper_id")) if claim.get("paper_id") else []
+            pdf_asset = next((a for a in assets if a.get("status") == "downloaded"), assets[0] if assets else None)
+
+            return {
+                "claim": claim,
+                "paper": paper,
+                "chunk": chunk,
+                "pdf_asset": pdf_asset,
+                "source_quote": claim.get("source_quote"),
+                "source_span": span,
+                "evidence_status": claim.get("evidence_status", "abstract_only"),
+            }
         return {"error": f"Claim not found: {claim_id}"}
     finally:
         storage.close()
@@ -667,12 +683,14 @@ def _handle_get_review_artifacts(params: dict[str, Any]) -> dict[str, Any]:
 def _handle_download_paper_pdf(params: dict[str, Any]) -> dict[str, Any]:
     """Download a PDF for a single paper."""
     from knowcran.fulltext import download_paper_pdf
+    settings = _settings_from_params(params)
     storage = _get_storage(params.get("data_dir"))
     try:
         return download_paper_pdf(
             paper_id=params["paper_id"],
             strategy=params.get("strategy", "fastest"),
             storage=storage,
+            settings=settings,
             force=params.get("force", False),
         )
     finally:
@@ -682,6 +700,7 @@ def _handle_download_paper_pdf(params: dict[str, Any]) -> dict[str, Any]:
 def _handle_download_topic_pdfs(params: dict[str, Any]) -> dict[str, Any]:
     """Download PDFs for all papers in a topic."""
     from knowcran.fulltext import download_topic_pdfs
+    settings = _settings_from_params(params)
     storage = _get_storage(params.get("data_dir"))
     try:
         return download_topic_pdfs(
@@ -689,6 +708,7 @@ def _handle_download_topic_pdfs(params: dict[str, Any]) -> dict[str, Any]:
             limit=params.get("limit", 20),
             strategy=params.get("strategy", "fastest"),
             storage=storage,
+            settings=settings,
         )
     finally:
         storage.close()
@@ -697,11 +717,13 @@ def _handle_download_topic_pdfs(params: dict[str, Any]) -> dict[str, Any]:
 def _handle_parse_paper_pdf(params: dict[str, Any]) -> dict[str, Any]:
     """Parse a downloaded PDF into text chunks."""
     from knowcran.fulltext import parse_paper_pdf
+    settings = _settings_from_params(params)
     storage = _get_storage(params.get("data_dir"))
     try:
         return parse_paper_pdf(
             paper_id=params["paper_id"],
             storage=storage,
+            settings=settings,
         )
     finally:
         storage.close()
@@ -710,12 +732,14 @@ def _handle_parse_paper_pdf(params: dict[str, Any]) -> dict[str, Any]:
 def _handle_parse_topic_pdfs(params: dict[str, Any]) -> dict[str, Any]:
     """Parse all downloaded PDFs for a topic."""
     from knowcran.fulltext import parse_topic_pdfs
+    settings = _settings_from_params(params)
     storage = _get_storage(params.get("data_dir"))
     try:
         return parse_topic_pdfs(
             topic=params["topic"],
             limit=params.get("limit", 20),
             storage=storage,
+            settings=settings,
         )
     finally:
         storage.close()
@@ -777,6 +801,7 @@ def _handle_review_fulltext(params: dict[str, Any]) -> dict[str, Any]:
 def _handle_run_topic(params: dict[str, Any]) -> dict[str, Any]:
     """Run the full topic pipeline."""
     from knowcran.workflow import run_topic_workflow
+    settings = _settings_from_params(params)
     storage = _get_storage(params.get("data_dir"))
     try:
         return run_topic_workflow(
@@ -784,6 +809,13 @@ def _handle_run_topic(params: dict[str, Any]) -> dict[str, Any]:
             limit=params.get("limit", 50),
             strategy=params.get("strategy", "fastest"),
             storage=storage,
+            settings=settings,
+            skip_discover=params.get("skip_discover", False),
+            skip_download=params.get("skip_download", False),
+            skip_parse=params.get("skip_parse", False),
+            skip_review=params.get("skip_review", False),
+            fulltext=params.get("fulltext", True),
+            gpu=params.get("gpu", False),
         )
     finally:
         storage.close()
@@ -792,6 +824,7 @@ def _handle_run_topic(params: dict[str, Any]) -> dict[str, Any]:
 def _handle_search_fulltext_hybrid(params: dict[str, Any]) -> dict[str, Any]:
     """Search fulltext chunks using a hybrid approach combining FTS5 keyword matching and vector similarity."""
     from knowcran.fulltext import hybrid_search_chunks as do_hybrid_search
+    settings = _settings_from_params(params)
     storage = _get_storage(params.get("data_dir"))
     try:
         results = do_hybrid_search(
@@ -800,6 +833,7 @@ def _handle_search_fulltext_hybrid(params: dict[str, Any]) -> dict[str, Any]:
             paper_id=params.get("paper_id"),
             limit=params.get("limit", 20),
             storage=storage,
+            settings=settings,
         )
         resp = {
             "results": results,
@@ -905,6 +939,208 @@ def _handle_get_page_context(params: dict[str, Any]) -> dict[str, Any]:
         storage.close()
 
 
+def _handle_answer_rag(params: dict[str, Any]) -> dict[str, Any]:
+    """Answer a question using multimodal RAG with evidence from scientific papers."""
+    storage = _get_storage(params.get("data_dir"))
+    try:
+        from knowcran.config import Settings
+        from knowcran.rag import run_rag_query
+
+        settings = _settings(params.get("data_dir"))
+        query = params["query"]
+        topic = params.get("topic")
+        paper_id = params.get("paper_id")
+        limit = params.get("limit", 20)
+
+        result = run_rag_query(
+            query=query,
+            topic=topic,
+            paper_id=paper_id,
+            storage=storage,
+            settings=settings,
+        )
+
+        return result
+    finally:
+        storage.close()
+
+
+# ---------------------------------------------------------------------------
+# Vision / Multimodal handlers
+# ---------------------------------------------------------------------------
+
+def _handle_describe_figure(params: dict[str, Any]) -> dict[str, Any]:
+    """Describe a figure or table image using Vision API."""
+    media_id = params.get("media_id")
+    image_path = params.get("image_path")
+    task_type = params.get("task_type", "describe_media")
+    prompt = params.get("prompt")
+    settings = _settings_from_params(params)
+
+    # Resolve image path from media_id if needed
+    if not image_path and media_id:
+        storage = _get_storage(params.get("data_dir"))
+        try:
+            asset = storage.get_media_asset(media_id)
+            if not asset:
+                return {"error": f"Media asset not found: {media_id}"}
+            image_path = asset.get("image_path", "")
+        finally:
+            storage.close()
+
+    if not image_path:
+        return {"error": "Either media_id or image_path is required"}
+
+    # Get Vision Router
+    router = settings.get_vision_router()
+    if router is None:
+        return {
+            "error": "No Vision API provider configured. "
+                     "Set MNEMOSYNE_VISION_PROVIDERS and provider-specific env vars."
+        }
+
+    result = router.describe_media(
+        image_path=image_path,
+        task_type=task_type,
+        prompt=prompt,
+    )
+
+    # Store VLM description if successful and we have a media_id
+    if result.get("status") == "success" and media_id:
+        storage = _get_storage(params.get("data_dir"))
+        try:
+            import uuid
+            storage.insert_media_vlm_description(
+                description_id=str(uuid.uuid4()),
+                media_id=media_id,
+                provider=result.get("provider", "unknown"),
+                model=result.get("model", "unknown"),
+                description_text=result.get("description", ""),
+                source_type=result.get("source_type", "auxiliary_interpretation"),
+                status="success",
+            )
+        finally:
+            storage.close()
+
+    return {
+        "description": result.get("description", ""),
+        "provider": result.get("provider", "unknown"),
+        "model": result.get("model", "unknown"),
+        "status": result.get("status", "error"),
+        "error": result.get("error"),
+        "source_type": result.get("source_type", "auxiliary_interpretation"),
+        "media_id": media_id,
+        "image_path": image_path,
+    }
+
+
+def _handle_extract_table_markdown(params: dict[str, Any]) -> dict[str, Any]:
+    """Extract table from image to Markdown using Vision API."""
+    media_id = params.get("media_id")
+    image_path = params.get("image_path")
+    prompt = params.get("prompt")
+    settings = _settings_from_params(params)
+
+    # Resolve image path from media_id if needed
+    if not image_path and media_id:
+        storage = _get_storage(params.get("data_dir"))
+        try:
+            asset = storage.get_media_asset(media_id)
+            if not asset:
+                return {"error": f"Media asset not found: {media_id}"}
+            image_path = asset.get("image_path", "")
+        finally:
+            storage.close()
+
+    if not image_path:
+        return {"error": "Either media_id or image_path is required"}
+
+    # Get Vision Router
+    router = settings.get_vision_router()
+    if router is None:
+        return {
+            "error": "No Vision API provider configured. "
+                     "Set MNEMOSYNE_VISION_PROVIDERS and provider-specific env vars."
+        }
+
+    result = router.describe_media(
+        image_path=image_path,
+        task_type="table_to_markdown",
+        prompt=prompt,
+    )
+
+    # Store VLM description if successful and we have a media_id
+    if result.get("status") == "success" and media_id:
+        storage = _get_storage(params.get("data_dir"))
+        try:
+            import uuid
+            storage.insert_media_vlm_description(
+                description_id=str(uuid.uuid4()),
+                media_id=media_id,
+                provider=result.get("provider", "unknown"),
+                model=result.get("model", "unknown"),
+                description_text=result.get("description", ""),
+                source_type="machine_extracted_table",
+                status="success",
+            )
+            # Also update markdown_table field on the asset
+            storage.conn.execute(
+                "UPDATE parsed_media_assets SET markdown_table = ? WHERE media_id = ?",
+                (result.get("description", ""), media_id),
+            )
+            storage.conn.commit()
+        finally:
+            storage.close()
+
+    return {
+        "markdown": result.get("description", ""),
+        "provider": result.get("provider", "unknown"),
+        "model": result.get("model", "unknown"),
+        "status": result.get("status", "error"),
+        "error": result.get("error"),
+        "media_id": media_id,
+        "image_path": image_path,
+    }
+
+
+def _handle_get_media_assets(params: dict[str, Any]) -> dict[str, Any]:
+    """Get all media assets for a paper."""
+    paper_id = params.get("paper_id", "")
+    if not paper_id:
+        return {"error": "paper_id is required"}
+
+    storage = _get_storage(params.get("data_dir"))
+    try:
+        assets = storage.get_media_for_paper(paper_id)
+        result = []
+        for a in assets:
+            mid = a.get("media_id", "")
+            # Attach VLM descriptions if available
+            vlm_descriptions = storage.get_media_vlm_descriptions(mid)
+            result.append({
+                "media_id": mid,
+                "media_type": a.get("media_type"),
+                "figure_label": a.get("figure_label"),
+                "caption_text": a.get("caption_text"),
+                "image_path": a.get("image_path"),
+                "page_number": a.get("page_number"),
+                "markdown_table": a.get("markdown_table"),
+                "extraction_method": a.get("extraction_method"),
+                "vlm_descriptions": [
+                    {
+                        "provider": d.get("provider"),
+                        "model": d.get("model"),
+                        "description_text": d.get("description_text"),
+                        "source_type": d.get("source_type"),
+                    }
+                    for d in vlm_descriptions
+                ],
+            })
+        return {"paper_id": paper_id, "media_count": len(result), "assets": result}
+    finally:
+        storage.close()
+
+
 # ---------------------------------------------------------------------------
 # Handler dispatch map
 # ---------------------------------------------------------------------------
@@ -940,6 +1176,11 @@ _TOOL_HANDLERS = {
     "knowcran_search_fulltext_hybrid": _handle_search_fulltext_hybrid,
     "knowcran_get_evidence_pack": _handle_get_evidence_pack,
     "knowcran_get_page_context": _handle_get_page_context,
+    "knowcran_answer_rag": _handle_answer_rag,
+    # Vision / Multimodal tools
+    "knowcran_describe_figure": _handle_describe_figure,
+    "knowcran_extract_table_markdown": _handle_extract_table_markdown,
+    "knowcran_get_media_assets": _handle_get_media_assets,
 }
 
 # Legacy handler names (backward compat)
@@ -957,6 +1198,11 @@ _MNEMOSYNE_HANDLERS = {
     "mnemosyne_export_obsidian": _handle_export_obsidian,
 }
 
+_MNEMOSYNE_TOOL_ALIASES = {
+    name: name.replace("mnemosyne_", "knowcran_", 1)
+    for name in _MNEMOSYNE_HANDLERS
+}
+
 
 def _allowed_tool_names(profile: str) -> set[str]:
     from knowcran.server.tools import get_admin_profile_tools, get_all_tools, get_read_only_tools
@@ -971,7 +1217,8 @@ def _allowed_tool_names(profile: str) -> set[str]:
 def handle_tool_call(tool_name: str, params: dict[str, Any], profile: str | None = None) -> dict[str, Any]:
     """Handle an MCP tool call (legacy interface for tests)."""
     active_profile = profile or os.getenv("KNOWCRAN_MCP_PROFILE", "curate")
-    if tool_name.startswith("knowcran_") and tool_name not in _allowed_tool_names(active_profile):
+    canonical_tool_name = _MNEMOSYNE_TOOL_ALIASES.get(tool_name, tool_name)
+    if canonical_tool_name.startswith("knowcran_") and canonical_tool_name not in _allowed_tool_names(active_profile):
         return {"error": f"Tool not allowed in {active_profile} profile: {tool_name}"}
     handler = _TOOL_HANDLERS.get(tool_name) or _MNEMOSYNE_HANDLERS.get(tool_name)
     if handler is None:

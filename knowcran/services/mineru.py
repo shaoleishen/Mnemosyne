@@ -16,10 +16,15 @@ services:
     image: mineru:latest
     container_name: mineru-api
     restart: always
+    shm_size: "8gb"
     ports:
       - "{port}:{port}"
     environment:
       - MINERU_MODEL_SOURCE={model_source}
+      - NVIDIA_VISIBLE_DEVICES={nvidia_visible_devices}
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+      - NVIDIA_DISABLE_REQUIRE=1
+      - MINERU_DEVICE_MODE={device_mode}
     volumes:
       - "{config_file}:/root/magic-pdf.json"
       - "{models_dir}:/root/models"
@@ -35,6 +40,7 @@ GPU_CONFIG_TEMPLATE = """    deploy:
             - driver: nvidia
               count: 1
               capabilities: [gpu]
+    gpus: all
 """
 
 class MinerUManager:
@@ -73,7 +79,7 @@ class MinerUManager:
                 self.config_file.write_text(json.dumps(default_config, indent=2), encoding="utf-8")
                 logger.info(f"Generated default magic-pdf.json on host at: {self.config_file}")
             except Exception as e:
-                logger.error(f"Failed to generate magic-pdf.json configuration: {e}")
+                raise RuntimeError(f"Failed to generate magic-pdf.json configuration: {e}") from e
                 
         # 2. Ensure models directory exists on host
         self.models_dir.mkdir(parents=True, exist_ok=True)
@@ -90,6 +96,8 @@ class MinerUManager:
         content = COMPOSE_TEMPLATE.format(
             port=self.port,
             model_source=model_source,
+            nvidia_visible_devices="all" if self.gpu else "void",
+            device_mode="cuda" if self.gpu else "cpu",
             config_file=abs_config,
             models_dir=abs_models,
             gpu_config=gpu_config
@@ -123,9 +131,7 @@ class MinerUManager:
             err_msg = (e.stderr or "").lower()
             if "daemon" in err_msg or "connect" in err_msg or "context" in err_msg:
                 raise RuntimeError("Docker daemon is not running. Please start the Docker service before launching managed containers.") from e
-            logger.warning(f"Failed to check local Docker images: {e.stderr or e}")
-        except Exception as e:
-            logger.warning(f"Failed to check local Docker images: {e}")
+            raise RuntimeError(f"Failed to check local Docker images: {e.stderr or e}") from e
 
         # Check GPU compatibility if GPU is requested
         if self.gpu:
@@ -141,9 +147,7 @@ class MinerUManager:
                         "  https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html"
                     )
             except subprocess.CalledProcessError as e:
-                logger.warning(f"Failed to check Docker runtimes: {e.stderr or e}")
-            except Exception as e:
-                logger.warning(f"Failed to check Docker runtimes: {e}")
+                raise RuntimeError(f"Failed to check Docker runtimes: {e.stderr or e}") from e
 
         self.write_compose_file()
         compose_file = self.get_compose_file_path()

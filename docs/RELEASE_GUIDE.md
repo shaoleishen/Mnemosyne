@@ -1,12 +1,12 @@
 # Mnemosyne / KnowCran Release Guide & 1.0 Release Checklist
 
-This guide documents the procedures for packaging, validating, and publishing a production-ready release of `knowcran` on PyPI and GitHub.
+This guide documents the procedures for packaging, validating, and publishing a production-ready release candidate of `knowcran` on PyPI and GitHub. Promote the PyPI development classifier to `Production/Stable` only after every release gate has passed.
 
 ---
 
 ## 1. PyPI Release Checklist
 
-Before uploading to PyPI, verify your local build distributions.
+Before publishing to PyPI, verify your local build distributions. The canonical release path is now the GitHub Actions release workflow, which uses PyPI Trusted Publishing.
 
 ### Build the Package
 From the repository root with the virtual environment activated:
@@ -37,21 +37,21 @@ python -m venv test_env
 ./test_env/bin/knowcran doctor
 ```
 
-### Upload to PyPI
-Use `twine` to securely upload the distribution files:
-```bash
-# Upload to TestPyPI first (optional but recommended)
-python -m twine upload --repository testpypi dist/*
+### Configure PyPI Trusted Publishing
 
-# Upload to PyPI Production
-python -m twine upload dist/*
-```
+In the PyPI project settings, add a trusted publisher for:
+
+- repository: `shaoleishen/Mnemosyne`
+- workflow: `release.yml`
+- environment: `pypi`
+
+Manual `twine upload` remains useful for TestPyPI dry runs, but production publishing should happen from the tag-triggered workflow.
 
 ---
 
 ## 2. GitHub Release Checklist
 
-Prepare the GitHub Release with the built assets, checksums, and version notes.
+Prepare the GitHub Release with the built assets, checksums, and version notes. Pushing a `v*` tag triggers `.github/workflows/release.yml`, which builds the source distribution and wheel, publishes to PyPI, attaches artifacts and `SHA256SUMS.txt`, and creates the GitHub Release.
 
 ### Tag the Release
 Tag the git commit and push the tag:
@@ -61,29 +61,25 @@ git push origin v1.0.0
 ```
 
 ### Generate Checksums
-Generate SHA256 checksums for the build assets:
-- **Windows**:
-  ```cmd
-  certutil -hashfile dist/knowcran-1.0.0-py3-none-any.whl SHA256
-  certutil -hashfile dist/knowcran-1.0.0.tar.gz SHA256
-  ```
-- **Unix**:
-  ```bash
-  sha256sum dist/knowcran-1.0.0-py3-none-any.whl
-  sha256sum dist/knowcran-1.0.0.tar.gz
-  ```
+The release workflow generates `dist/SHA256SUMS.txt`. For a local dry run, generate SHA256 checksums before uploading release assets:
+```bash
+cd dist
+sha256sum * > SHA256SUMS.txt
+```
 
 ### Release Body Template
 Copy and populate this format for the GitHub Release description:
 
 ```markdown
-# Release v1.0.0 (Production Ready)
+# Release v1.0.0 (Production Baseline)
 
-Mnemosyne `knowcran` version 1.0.0 is the first official production-ready release of the local scientific discovery knowledge base.
+Mnemosyne `knowcran` version 1.0.0 is the first production-baseline release candidate of the local scientific discovery knowledge base.
 
 ## Key Deliverables
 - **Out-of-the-box PDF layout parsing**: Powered by PyMuPDF and optional MinerU API.
-- **Concurrently downloading & parsing**: Parallelized downloading (5 threads) and layout parsing (3 threads).
+- **Managed local production services**: Optional managed MinerU and OpenAI-compatible local embedding server.
+- **GPU-aware execution**: `knowcran services start --gpu` and `knowcran run-topic --gpu` enable CUDA-oriented service settings for local workstations.
+- **Concurrently downloading & parsing**: Parallelized downloading and layout parsing with configurable worker limits.
 - **RRF Hybrid Search**: Merging SQLite FTS5 (BM25) and dense embeddings via Reciprocal Rank Fusion, with section boosts (Results, Methods).
 - **E2E verification & doctor command**: Run `knowcran doctor` to inspect local system health.
 - **Obsidian callout customizations**: Key claims formatted in structured callouts (`> [!success]`, `> [!warning]`) and LaTeX displays.
@@ -91,13 +87,16 @@ Mnemosyne `knowcran` version 1.0.0 is the first official production-ready releas
 ## Installation
 ```bash
 pip install knowcran
-# Or for advanced PDF layout extraction and RAG
-pip install "knowcran[pdf,rag]"
+# Or for managed local services and RAG
+pip install "knowcran[local,rag]"
+# Add GPU dependencies in a CUDA-prepared environment
+pip install "knowcran[gpu]"
 ```
 
 ## Known Limitations
 - Vector search similarity operates on CPU via in-memory list scans. Best suited for vaults with `< 10,000` chunks.
-- MinerU layout parsing requires a running local `mineru-api` service. If offline, the parser falls back automatically to PyMuPDF.
+- MinerU managed Docker mode requires a locally built `mineru:latest` image. If `MNEMOSYNE_PDF_PARSER=auto` and MinerU is offline, the parser falls back automatically to PyMuPDF.
+- Local embedding mode requires the `local` optional dependencies and a cached or downloadable embedding model.
 
 ## Checksums
 | File | SHA256 Checksum |

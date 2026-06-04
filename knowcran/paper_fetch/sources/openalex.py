@@ -19,7 +19,7 @@ class OpenAlexSource(SourceBase):
     _API_URL = "https://api.openalex.org/works/doi:{doi}"
 
     def fetch(self, doi: str | None, arxiv_id: str | None,
-              title: str | None = None) -> tuple[bytes | None, str | None]:
+              title: str | None = None, pmid: str | None = None) -> tuple[bytes | None, str | None]:
         if not doi:
             return None, "No DOI"
         api_url = self._API_URL.format(doi=doi)

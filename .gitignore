@@ -12,6 +12,7 @@ env/
 .env
 data/
 vault/
+mnemosyne_output/
 .mypy_cache/
 .pytest_cache/
 .ruff_cache/
@@ -21,8 +22,21 @@ htmlcov/
 *.sqlite3
 .DS_Store
 .claw/
+.claude/
 pi-packages/
 UNKNOWN.egg-info/
 MNEMOSYNE_VAULT_OUTPUT_REVIEW_*.md
 pytest_temp/
+
+# Test/temp files
+test_print.txt
+
+# Local PDF files
+*.pdf
+
+# Vision processing output
+science.adz2742_vision*.md
+
+# Claude-specific config
+CLAUDE.md
 

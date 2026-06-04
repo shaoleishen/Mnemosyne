@@ -63,34 +63,14 @@ jobs:
       - name: Verify package metadata with twine
         run: twine check dist/*
 
-      - name: Install package with local dependencies
-        run: pip install -e ".[local]"
+      - name: Install package
+        run: pip install -e .
 
       - name: Verify CLI commands
         run: |
           knowcran --help
           knowcran doctor
 
-      - name: Local services CLI & health probe smoke check
-        shell: bash
+      - name: Verify local service modules import without model downloads
         run: |
-          knowcran embedding-server --host 127.0.0.1 --port 8020 --device cpu --model all-MiniLM-L6-v2 &
-          SERVER_PID=$!
-          echo "Waiting for local embedding-server (PID: $SERVER_PID) to respond..."
-          
-          SUCCESS=false
-          for i in {1..30}; do
-            if curl -s -f http://127.0.0.1:8020/health > /dev/null; then
-              echo "Server health check passed!"
-              SUCCESS=true
-              break
-            fi
-            sleep 1
-          done
-          
-          kill $SERVER_PID
-          
-          if [ "$SUCCESS" = false ]; then
-            echo "Local embedding-server failed health probe!"
-            exit 1
-          fi
+          python -c "from knowcran.services.manager import probe_embedding_health, probe_mineru_health; print(probe_embedding_health, probe_mineru_health)"

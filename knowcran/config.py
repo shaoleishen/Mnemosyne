@@ -83,7 +83,7 @@ class Settings:
     mineru_config_file: Path = field(default_factory=lambda: Path(os.getenv("MNEMOSYNE_MINERU_CONFIG_FILE", "data/mineru/magic-pdf.json")))
     mineru_return_md: bool = field(default_factory=lambda: os.getenv("MINERU_RETURN_MD", "true").lower() == "true")
     mineru_return_content_list: bool = field(default_factory=lambda: os.getenv("MINERU_RETURN_CONTENT_LIST", "true").lower() == "true")
-    openai_api_key: str = field(default_factory=lambda: os.getenv("OPENAI_API_key", os.getenv("OPENAI_API_KEY", "")))
+    openai_api_key: str = field(default_factory=lambda: os.getenv("OPENAI_API_KEY", os.getenv("OPENAI_API_key", "")))
     openai_api_base: str = field(default_factory=lambda: os.getenv("MNEMOSYNE_EMBEDDING_API_BASE", "https://api.openai.com/v1"))
     embedding_provider: str = field(default_factory=lambda: os.getenv("MNEMOSYNE_EMBEDDING_PROVIDER", "openai"))
     embedding_model: str = field(default_factory=lambda: os.getenv("MNEMOSYNE_EMBEDDING_MODEL", "text-embedding-3-large"))
@@ -92,6 +92,32 @@ class Settings:
     local_embedding_model: str = field(default_factory=lambda: os.getenv("MNEMOSYNE_LOCAL_EMBEDDING_MODEL", "BAAI/bge-m3"))
     local_embedding_device: str = field(default_factory=lambda: os.getenv("MNEMOSYNE_LOCAL_EMBEDDING_DEVICE", "cpu"))
     local_embedding_batch_size: int = field(default_factory=lambda: int(os.getenv("MNEMOSYNE_LOCAL_EMBEDDING_BATCH_SIZE", "16")))
+    local_embedding_startup_timeout_seconds: int = field(default_factory=lambda: int(os.getenv("MNEMOSYNE_LOCAL_EMBEDDING_STARTUP_TIMEOUT_SECONDS", "180")))
+    mineru_startup_timeout_seconds: int = field(default_factory=lambda: int(os.getenv("MNEMOSYNE_MINERU_STARTUP_TIMEOUT_SECONDS", "180")))
+
+    # Vision API settings (multimodal)
+    vision_providers: str = field(default_factory=lambda: os.getenv("MNEMOSYNE_VISION_PROVIDERS", ""))
+    vision_health_file: Path = field(default_factory=lambda: Path(os.getenv("MNEMOSYNE_VISION_HEALTH_FILE", "data/runtime/vision_provider_health.json")))
+
+    # Vision provider: Mimo
+    vision_mimo_api_base: str = field(default_factory=lambda: os.getenv("MNEMOSYNE_VISION_MIMO_API_BASE", ""))
+    vision_mimo_api_key: str = field(default_factory=lambda: os.getenv("MNEMOSYNE_VISION_MIMO_API_KEY", ""))
+    vision_mimo_model: str = field(default_factory=lambda: os.getenv("MNEMOSYNE_VISION_MIMO_MODEL", ""))
+
+    # Vision provider: Kimi
+    vision_kimi_api_base: str = field(default_factory=lambda: os.getenv("MNEMOSYNE_VISION_KIMI_API_BASE", ""))
+    vision_kimi_api_key: str = field(default_factory=lambda: os.getenv("MNEMOSYNE_VISION_KIMI_API_KEY", ""))
+    vision_kimi_model: str = field(default_factory=lambda: os.getenv("MNEMOSYNE_VISION_KIMI_MODEL", ""))
+
+    # Vision provider: Qwen
+    vision_qwen_api_base: str = field(default_factory=lambda: os.getenv("MNEMOSYNE_VISION_QWEN_API_BASE", ""))
+    vision_qwen_api_key: str = field(default_factory=lambda: os.getenv("MNEMOSYNE_VISION_QWEN_API_KEY", ""))
+    vision_qwen_model: str = field(default_factory=lambda: os.getenv("MNEMOSYNE_VISION_QWEN_MODEL", ""))
+
+    # Vision provider: DeepSeek
+    vision_deepseek_api_base: str = field(default_factory=lambda: os.getenv("MNEMOSYNE_VISION_DEEPSEEK_API_BASE", ""))
+    vision_deepseek_api_key: str = field(default_factory=lambda: os.getenv("MNEMOSYNE_VISION_DEEPSEEK_API_KEY", ""))
+    vision_deepseek_model: str = field(default_factory=lambda: os.getenv("MNEMOSYNE_VISION_DEEPSEEK_MODEL", ""))
 
     def __post_init__(self):
         self.data_dir = Path(self.data_dir)
@@ -122,6 +148,39 @@ class Settings:
     @classmethod
     def from_env(cls) -> Settings:
         return cls()
+
+    def get_vision_router(self):
+        """Create a VisionRouter from configured providers."""
+        from knowcran.vision.router import VisionRouter
+        from knowcran.vision.provider import VisionProvider
+
+        providers = []
+        provider_configs = self.vision_providers.split(",")
+
+        for name in provider_configs:
+            name = name.strip().lower()
+            if not name:
+                continue
+
+            api_base = getattr(self, f"vision_{name}_api_base", "")
+            api_key = getattr(self, f"vision_{name}_api_key", "")
+            model = getattr(self, f"vision_{name}_model", "")
+
+            if api_base and api_key and model:
+                providers.append(VisionProvider(
+                    name=name,
+                    api_base=api_base,
+                    api_key=api_key,
+                    model=model,
+                ))
+
+        if not providers:
+            return None
+
+        return VisionRouter(
+            providers=providers,
+            health_file=self.vision_health_file,
+        )
 
 
 # Module-level defaults for backward compatibility

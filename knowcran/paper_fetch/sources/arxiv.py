@@ -20,7 +20,7 @@ class ArxivSource(SourceBase):
     _PDF_URL = "https://arxiv.org/pdf/{arxiv_id}.pdf"
 
     def fetch(self, doi: str | None, arxiv_id: str | None,
-              title: str | None = None) -> tuple[bytes | None, str | None]:
+              title: str | None = None, pmid: str | None = None) -> tuple[bytes | None, str | None]:
         if not arxiv_id:
             return None, "No arXiv ID"
         url = self._PDF_URL.format(arxiv_id=arxiv_id)

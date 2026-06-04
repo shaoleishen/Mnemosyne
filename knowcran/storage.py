@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
@@ -11,6 +12,8 @@ from typing import Any
 
 from knowcran.config import DB_PATH, DATA_DIR
 from knowcran.models import Claim, PaperLink, PaperRecord
+
+logger = logging.getLogger(__name__)
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS papers (
@@ -257,6 +260,45 @@ CREATE TABLE IF NOT EXISTS chunk_embeddings (
     embedding BLOB NOT NULL,
     created_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS parsed_media_assets (
+    media_id TEXT PRIMARY KEY,
+    paper_id TEXT NOT NULL,
+    asset_id TEXT NOT NULL,
+    media_type TEXT NOT NULL,
+    figure_label TEXT,
+    caption_text TEXT,
+    image_path TEXT NOT NULL,
+    page_number INTEGER,
+    bbox TEXT,
+    ocr_text TEXT,
+    markdown_table TEXT,
+    extraction_method TEXT,
+    confidence REAL,
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS media_mentions (
+    mention_id TEXT PRIMARY KEY,
+    media_id TEXT NOT NULL,
+    chunk_id TEXT NOT NULL,
+    paper_id TEXT NOT NULL,
+    mention_text TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS media_vlm_descriptions (
+    description_id TEXT PRIMARY KEY,
+    media_id TEXT NOT NULL,
+    provider TEXT NOT NULL,
+    model TEXT NOT NULL,
+    prompt_hash TEXT,
+    description_text TEXT NOT NULL,
+    source_type TEXT NOT NULL DEFAULT 'auxiliary_interpretation',
+    status TEXT NOT NULL,
+    error TEXT,
+    created_at TEXT NOT NULL
+);
 """
 
 
@@ -264,12 +306,39 @@ def _migrate(conn: sqlite3.Connection) -> None:
     """Apply idempotent schema migrations for existing databases."""
     cursor = conn.cursor()
 
-    # Get existing columns for claims table
-    cursor.execute("PRAGMA table_info(claims)")
-    existing_cols = {row[1] for row in cursor.fetchall()}
+    def add_missing_columns(table: str, columns: dict[str, str]) -> set[str]:
+        cursor.execute(f"PRAGMA table_info({table})")
+        existing = {row[1] for row in cursor.fetchall()}
+        for col, col_type in columns.items():
+            if col not in existing:
+                cursor.execute(f"ALTER TABLE {table} ADD COLUMN {col} {col_type}")
+        return existing
 
+    add_missing_columns("papers", {
+        "abstract": "TEXT",
+        "year": "INTEGER",
+        "publication_date": "TEXT",
+        "venue": "TEXT",
+        "url": "TEXT",
+        "doi": "TEXT",
+        "pmid": "TEXT",
+        "arxiv_id": "TEXT",
+        "citation_count": "INTEGER",
+        "reference_count": "INTEGER",
+        "influential_citation_count": "INTEGER",
+        "fields_json": "TEXT",
+        "authors_json": "TEXT",
+        "external_ids_json": "TEXT",
+        "open_access_pdf_json": "TEXT",
+        "discovered_by": "TEXT",
+        "relevance_score": "REAL",
+        "created_at": "TEXT",
+        "updated_at": "TEXT",
+    })
+
+    # Get existing columns for claims table
     # Add missing columns to claims
-    new_cols = {
+    add_missing_columns("claims", {
         "claim_hash": "TEXT",
         "source_text_hash": "TEXT",
         "source_span_json": "TEXT",
@@ -278,22 +347,44 @@ def _migrate(conn: sqlite3.Connection) -> None:
         "citation_key": "TEXT",
         "evidence_status": "TEXT DEFAULT 'abstract_only'",
         "source_quote": "TEXT",
-    }
-    for col, col_type in new_cols.items():
-        if col not in existing_cols:
-            cursor.execute(f"ALTER TABLE claims ADD COLUMN {col} {col_type}")
+    })
 
     # Get existing columns for topic_papers table
-    cursor.execute("PRAGMA table_info(topic_papers)")
-    tp_cols = {row[1] for row in cursor.fetchall()}
+    tp_cols = add_missing_columns("topic_papers", {
+        "source": "TEXT",
+        "relevance_score": "REAL",
+        "llm_relevance_score": "REAL",
+        "llm_relevance_reason": "TEXT",
+        "created_at": "TEXT",
+        "updated_at": "TEXT",
+    })
 
-    if "llm_relevance_score" not in tp_cols:
-        cursor.execute("ALTER TABLE topic_papers ADD COLUMN llm_relevance_score REAL")
-    if "llm_relevance_reason" not in tp_cols:
-        cursor.execute("ALTER TABLE topic_papers ADD COLUMN llm_relevance_reason TEXT")
     if "updated_at" not in tp_cols:
-        cursor.execute("ALTER TABLE topic_papers ADD COLUMN updated_at TEXT")
         cursor.execute("UPDATE topic_papers SET updated_at = created_at WHERE updated_at IS NULL")
+
+    add_missing_columns("paper_assets", {
+        "asset_type": "TEXT DEFAULT 'pdf'",
+        "doi": "TEXT",
+        "arxiv_id": "TEXT",
+        "file_path": "TEXT",
+        "source": "TEXT",
+        "strategy": "TEXT",
+        "status": "TEXT DEFAULT 'pending'",
+        "error": "TEXT",
+        "sha256": "TEXT",
+        "size_bytes": "INTEGER",
+        "created_at": "TEXT",
+        "updated_at": "TEXT",
+    })
+
+    add_missing_columns("review_runs", {
+        "input_papers_json": "TEXT",
+        "input_claims_json": "TEXT",
+        "input_chunks_json": "TEXT",
+        "output_dir": "TEXT",
+        "status": "TEXT DEFAULT 'pending'",
+        "created_at": "TEXT",
+    })
 
     # Add indices for query performance
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_claims_topic ON claims(topic)")
@@ -371,11 +462,19 @@ def _migrate(conn: sqlite3.Connection) -> None:
         )
     """)
 
+    # Media assets indexes
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_media_assets_paper_id ON parsed_media_assets(paper_id)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_media_assets_label ON parsed_media_assets(figure_label)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_media_mentions_media_id ON media_mentions(media_id)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_media_mentions_chunk_id ON media_mentions(chunk_id)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_media_vlm_media_id ON media_vlm_descriptions(media_id)")
+
     conn.commit()
 
 
 class Storage:
     def __init__(self, db_path: Path = DB_PATH):
+        db_path = Path(db_path)
         db_path.parent.mkdir(parents=True, exist_ok=True)
         self.db_path = db_path
         self.conn = sqlite3.connect(str(db_path), timeout=10)
@@ -562,6 +661,13 @@ class Storage:
             (topic,),
         ).fetchall()
         return [dict(r) for r in rows]
+
+    def get_claim(self, claim_id: str) -> dict[str, Any] | None:
+        row = self.conn.execute(
+            "SELECT * FROM claims WHERE claim_id = ?",
+            (claim_id,),
+        ).fetchone()
+        return dict(row) if row else None
 
     def get_claims_for_paper(self, paper_id: str) -> list[dict[str, Any]]:
         rows = self.conn.execute(
@@ -1087,6 +1193,29 @@ class Storage:
         )
         self.conn.commit()
 
+    def delete_parsed_content_for_paper(self, paper_id: str) -> None:
+        """Remove parsed layout/chunk data for a paper before replacing it.
+
+        Parser output uses generated element and chunk IDs. Re-parsing without
+        cleanup would leave stale chunks and embeddings searchable for the same
+        paper.
+        """
+        self.conn.execute(
+            """DELETE FROM chunk_embeddings
+            WHERE chunk_id IN (
+                SELECT chunk_id FROM paper_chunks WHERE paper_id = ?
+                UNION
+                SELECT chunk_id FROM paper_fulltext_chunks WHERE paper_id = ?
+            )""",
+            (paper_id, paper_id),
+        )
+        self.conn.execute("DELETE FROM paper_chunks WHERE paper_id = ?", (paper_id,))
+        self.conn.execute("DELETE FROM paper_fulltext_chunks WHERE paper_id = ?", (paper_id,))
+        self.conn.execute("DELETE FROM parsed_elements WHERE paper_id = ?", (paper_id,))
+        self.conn.execute("DELETE FROM parsed_pages WHERE paper_id = ?", (paper_id,))
+        self.conn.execute("DELETE FROM parsed_documents WHERE paper_id = ?", (paper_id,))
+        self.conn.commit()
+
     def insert_chunk_embeddings(self, embeddings: list[dict[str, Any]]) -> None:
         now = datetime.now(timezone.utc).isoformat()
         rows = [(e["chunk_id"], e["embedding_model"], e["embedding"], now) for e in embeddings]
@@ -1382,6 +1511,173 @@ class Storage:
             (topic,),
         ).fetchall()
         return [dict(r) for r in rows]
+
+    # --- Media Assets ---
+
+    def insert_parsed_media_asset(self, media_id: str, paper_id: str, asset_id: str,
+                                  media_type: str, image_path: str,
+                                  figure_label: str | None = None,
+                                  caption_text: str | None = None,
+                                  page_number: int | None = None,
+                                  bbox: str | None = None,
+                                  ocr_text: str | None = None,
+                                  markdown_table: str | None = None,
+                                  extraction_method: str | None = None,
+                                  confidence: float | None = None) -> None:
+        """Insert a parsed media asset (figure/table screenshot)."""
+        now = datetime.now(timezone.utc).isoformat()
+        self.conn.execute(
+            """INSERT OR REPLACE INTO parsed_media_assets
+                (media_id, paper_id, asset_id, media_type, figure_label, caption_text,
+                 image_path, page_number, bbox, ocr_text, markdown_table,
+                 extraction_method, confidence, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (media_id, paper_id, asset_id, media_type, figure_label, caption_text,
+             image_path, page_number, bbox, ocr_text, markdown_table,
+             extraction_method, confidence, now),
+        )
+        self.conn.commit()
+
+    def insert_parsed_media_assets(self, assets: list[dict[str, Any]]) -> None:
+        """Batch insert parsed media assets."""
+        now = datetime.now(timezone.utc).isoformat()
+        rows = []
+        for a in assets:
+            rows.append((
+                a["media_id"], a["paper_id"], a["asset_id"], a["media_type"],
+                a.get("figure_label"), a.get("caption_text"), a["image_path"],
+                a.get("page_number"), a.get("bbox"), a.get("ocr_text"),
+                a.get("markdown_table"), a.get("extraction_method"),
+                a.get("confidence"), now,
+            ))
+        self.conn.executemany(
+            """INSERT OR REPLACE INTO parsed_media_assets
+                (media_id, paper_id, asset_id, media_type, figure_label, caption_text,
+                 image_path, page_number, bbox, ocr_text, markdown_table,
+                 extraction_method, confidence, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            rows,
+        )
+        self.conn.commit()
+
+    def get_media_asset(self, media_id: str) -> dict[str, Any] | None:
+        """Get a media asset by ID."""
+        row = self.conn.execute(
+            "SELECT * FROM parsed_media_assets WHERE media_id = ?", (media_id,)
+        ).fetchone()
+        return dict(row) if row else None
+
+    def get_media_for_paper(self, paper_id: str) -> list[dict[str, Any]]:
+        """Get all media assets for a paper."""
+        rows = self.conn.execute(
+            "SELECT * FROM parsed_media_assets WHERE paper_id = ? ORDER BY page_number, figure_label",
+            (paper_id,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    # --- Media Mentions ---
+
+    def insert_media_mention(self, mention_id: str, media_id: str, chunk_id: str,
+                             paper_id: str, mention_text: str) -> None:
+        """Insert a media mention linking a media asset to a chunk."""
+        now = datetime.now(timezone.utc).isoformat()
+        self.conn.execute(
+            """INSERT OR REPLACE INTO media_mentions
+                (mention_id, media_id, chunk_id, paper_id, mention_text, created_at)
+            VALUES (?, ?, ?, ?, ?, ?)""",
+            (mention_id, media_id, chunk_id, paper_id, mention_text, now),
+        )
+        self.conn.commit()
+
+    def insert_media_mentions(self, mentions: list[dict[str, Any]]) -> None:
+        """Batch insert media mentions."""
+        now = datetime.now(timezone.utc).isoformat()
+        rows = []
+        for m in mentions:
+            rows.append((
+                m["mention_id"], m["media_id"], m["chunk_id"],
+                m["paper_id"], m["mention_text"], now,
+            ))
+        self.conn.executemany(
+            """INSERT OR REPLACE INTO media_mentions
+                (mention_id, media_id, chunk_id, paper_id, mention_text, created_at)
+            VALUES (?, ?, ?, ?, ?, ?)""",
+            rows,
+        )
+        self.conn.commit()
+
+    def get_media_mentions(self, media_id: str) -> list[dict[str, Any]]:
+        """Get all mentions for a media asset."""
+        rows = self.conn.execute(
+            "SELECT * FROM media_mentions WHERE media_id = ? ORDER BY created_at",
+            (media_id,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def get_mentions_for_chunk(self, chunk_id: str) -> list[dict[str, Any]]:
+        """Get all media mentions for a chunk."""
+        rows = self.conn.execute(
+            "SELECT * FROM media_mentions WHERE chunk_id = ? ORDER BY created_at",
+            (chunk_id,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    # --- Media VLM Descriptions ---
+
+    def insert_media_vlm_description(self, description_id: str, media_id: str,
+                                     provider: str, model: str,
+                                     description_text: str,
+                                     source_type: str = "auxiliary_interpretation",
+                                     status: str = "success",
+                                     prompt_hash: str | None = None,
+                                     error: str | None = None) -> None:
+        """Insert a VLM description for a media asset."""
+        now = datetime.now(timezone.utc).isoformat()
+        self.conn.execute(
+            """INSERT OR REPLACE INTO media_vlm_descriptions
+                (description_id, media_id, provider, model, prompt_hash,
+                 description_text, source_type, status, error, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (description_id, media_id, provider, model, prompt_hash,
+             description_text, source_type, status, error, now),
+        )
+        self.conn.commit()
+
+    def get_media_vlm_descriptions(self, media_id: str) -> list[dict[str, Any]]:
+        """Get all VLM descriptions for a media asset."""
+        rows = self.conn.execute(
+            "SELECT * FROM media_vlm_descriptions WHERE media_id = ? ORDER BY created_at DESC",
+            (media_id,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def get_media_context(self, media_id: str) -> dict[str, Any] | None:
+        """Get full media context including asset, mentions, and VLM descriptions."""
+        asset = self.get_media_asset(media_id)
+        if not asset:
+            return None
+        mentions = self.get_media_mentions(media_id)
+        descriptions = self.get_media_vlm_descriptions(media_id)
+        return {
+            "asset": asset,
+            "mentions": mentions,
+            "descriptions": descriptions,
+        }
+
+    def get_media_context_for_paper(self, paper_id: str) -> list[dict[str, Any]]:
+        """Get full media context for all media in a paper."""
+        assets = self.get_media_for_paper(paper_id)
+        result = []
+        for asset in assets:
+            mid = asset["media_id"]
+            mentions = self.get_media_mentions(mid)
+            descriptions = self.get_media_vlm_descriptions(mid)
+            result.append({
+                "asset": asset,
+                "mentions": mentions,
+                "descriptions": descriptions,
+            })
+        return result
 
 
 def compute_claim_hash(claim: Claim) -> str:

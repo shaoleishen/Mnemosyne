@@ -21,9 +21,10 @@ logger = logging.getLogger(__name__)
 class DownloadResult:
     """Result of a PDF download attempt."""
     success: bool
-    identifier: str  # DOI or arXiv ID
+    identifier: str  # DOI or arXiv ID or PMID
     doi: str | None = None
     arxiv_id: str | None = None
+    pmid: str | None = None
     source: str | None = None
     file_path: str | None = None
     sha256: str | None = None
@@ -39,6 +40,7 @@ class DownloadResult:
             "identifier": self.identifier,
             "doi": self.doi,
             "arxiv_id": self.arxiv_id,
+            "pmid": self.pmid,
             "source": self.source,
             "file": self.file_path,
             "sha256": self.sha256,
@@ -57,7 +59,7 @@ class SourceBase:
     timeout: int = 30
 
     def fetch(self, doi: str | None, arxiv_id: str | None,
-              title: str | None = None) -> tuple[bytes | None, str | None]:
+              title: str | None = None, pmid: str | None = None) -> tuple[bytes | None, str | None]:
         """Attempt to download a PDF.
 
         Returns (pdf_bytes, error_message). If successful, error is None.
@@ -98,11 +100,12 @@ def _get_all_sources() -> list[type[SourceBase]]:
 
 
 def _try_source(source_cls: type[SourceBase], doi: str | None,
-                arxiv_id: str | None, title: str | None) -> DownloadResult | None:
+                arxiv_id: str | None, title: str | None,
+                pmid: str | None = None) -> DownloadResult | None:
     """Try a single source and return a result or None."""
     source = source_cls()
     try:
-        data, error = source.fetch(doi=doi, arxiv_id=arxiv_id, title=title)
+        data, error = source.fetch(doi=doi, arxiv_id=arxiv_id, title=title, pmid=pmid)
         if data is None:
             return None
         valid, val_err = validate_pdf(data)
@@ -111,9 +114,10 @@ def _try_source(source_cls: type[SourceBase], doi: str | None,
             return None
         result = DownloadResult(
             success=True,
-            identifier=doi or arxiv_id or "unknown",
+            identifier=doi or arxiv_id or pmid or "unknown",
             doi=doi,
             arxiv_id=arxiv_id,
+            pmid=pmid,
             source=source.name,
             sha256=compute_sha256(data),
             size_bytes=len(data),
@@ -130,27 +134,29 @@ def download_pdf(
     arxiv_id: str | None = None,
     title: str | None = None,
     paper_id: str | None = None,
+    pmid: str | None = None,
     strategy: str = "fastest",
     pdf_dir: str = "data/pdfs",
     scihub_enabled: bool = True,
     libgen_enabled: bool = True,
+    max_workers: int = 5,
     force: bool = False,
 ) -> DownloadResult:
     """Download a PDF from available sources.
 
-    Resolution order: DOI -> arXiv ID -> title search.
+    Resolution order: DOI -> arXiv ID -> PMID -> title search.
     Strategy determines which sources are tried and how.
     """
     # Normalize identifiers
     doi = normalize_doi(doi) if doi else None
     arxiv_id = detect_arxiv_id(arxiv_id) if arxiv_id else None
-    identifier = doi or arxiv_id or title or "unknown"
+    identifier = doi or arxiv_id or pmid or title or "unknown"
 
-    if not doi and not arxiv_id and not title:
+    if not doi and not arxiv_id and not pmid and not title:
         return DownloadResult(
             success=False,
             identifier=identifier,
-            error="No DOI, arXiv ID, or title provided",
+            error="No DOI, arXiv ID, PMID, or title provided",
         )
 
     # Check cache unless forced
@@ -187,6 +193,7 @@ def download_pdf(
         pdf_dir=pdf_dir,
         scihub_enabled=scihub_enabled,
         libgen_enabled=libgen_enabled,
+        max_workers=max_workers,
     )
 
     # Build source class list matching enabled config
@@ -208,20 +215,21 @@ def download_pdf(
 
     # Race sources
     if config.strategy == Strategy.FASTEST:
-        return _race_sources(enabled_sources, doi, arxiv_id, title, identifier, cache, pdf_dir)
+        return _race_sources(enabled_sources, doi, arxiv_id, title, identifier, cache, pdf_dir, config.max_workers, pmid=pmid)
     else:
-        return _sequential_sources(enabled_sources, doi, arxiv_id, title, identifier, cache, pdf_dir)
+        return _sequential_sources(enabled_sources, doi, arxiv_id, title, identifier, cache, pdf_dir, pmid=pmid)
 
 
 def _race_sources(sources: list[type[SourceBase]], doi: str | None,
                    arxiv_id: str | None, title: str | None, identifier: str,
-                   cache: PDFCache, pdf_dir: str) -> DownloadResult:
+                   cache: PDFCache, pdf_dir: str, max_workers: int = 5,
+                   pmid: str | None = None) -> DownloadResult:
     """Race all sources in parallel, return the first success."""
     import concurrent.futures
 
-    with ThreadPoolExecutor(max_workers=min(len(sources), 5)) as executor:
+    with ThreadPoolExecutor(max_workers=min(len(sources), max(1, max_workers))) as executor:
         futures = {
-            executor.submit(_try_source, src, doi, arxiv_id, title): src
+            executor.submit(_try_source, src, doi, arxiv_id, title, pmid): src
             for src in sources
         }
         try:
@@ -230,7 +238,7 @@ def _race_sources(sources: list[type[SourceBase]], doi: str | None,
                     result = future.result()
                     if result and result.success:
                         # Store in cache
-                        filename = safe_filename(title or "", doi)
+                        filename = safe_filename(title or "", doi=doi, arxiv_id=arxiv_id, fallback=identifier)
                         if result._payload:
                             result.file_path = str(cache.store(result._payload, filename))
                             result._payload = None  # Release memory
@@ -245,7 +253,7 @@ def _race_sources(sources: list[type[SourceBase]], doi: str | None,
                     try:
                         result = future.result()
                         if result and result.success:
-                            filename = safe_filename(title or "", doi)
+                            filename = safe_filename(title or "", doi=doi, arxiv_id=arxiv_id, fallback=identifier)
                             if result._payload:
                                 result.file_path = str(cache.store(result._payload, filename))
                                 result._payload = None
@@ -262,12 +270,13 @@ def _race_sources(sources: list[type[SourceBase]], doi: str | None,
 
 def _sequential_sources(sources: list[type[SourceBase]], doi: str | None,
                          arxiv_id: str | None, title: str | None, identifier: str,
-                         cache: PDFCache, pdf_dir: str) -> DownloadResult:
+                         cache: PDFCache, pdf_dir: str,
+                         pmid: str | None = None) -> DownloadResult:
     """Try sources sequentially in priority order."""
     for src_cls in sources:
-        result = _try_source(src_cls, doi, arxiv_id, title)
+        result = _try_source(src_cls, doi, arxiv_id, title, pmid)
         if result and result.success:
-            filename = safe_filename(title or "", doi)
+            filename = safe_filename(title or "", doi=doi, arxiv_id=arxiv_id, fallback=identifier)
             if result._payload:
                 result.file_path = str(cache.store(result._payload, filename))
                 result._payload = None  # Release memory

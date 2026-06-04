@@ -138,10 +138,10 @@ class PyMuPDFParser(BaseParser):
                     pages=pages,
                 )
 
-            import hashlib
             # Generate hashes
             all_text = "\n\n".join(e.text for e in elements)
-            source_hash = hashlib.sha256(pdf_path.name.encode()).hexdigest()[:16]
+            source_hash = self._hash_file(pdf_path)
+            import hashlib
             content_hash = hashlib.sha256(all_text.encode()).hexdigest()[:16]
 
             return ParsedDocument(
@@ -187,3 +187,11 @@ class PyMuPDFParser(BaseParser):
         if text.isupper() and len(text) > 3:
             return True
         return False
+
+    def _hash_file(self, path: Path) -> str:
+        import hashlib
+        digest = hashlib.sha256()
+        with open(path, "rb") as f:
+            for block in iter(lambda: f.read(1024 * 1024), b""):
+                digest.update(block)
+        return digest.hexdigest()[:16]

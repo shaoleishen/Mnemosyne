@@ -29,6 +29,8 @@ Please include:
 - Curate and admin MCP modes are local trusted workflows and should be enabled deliberately.
 - `data_dir` and `vault_dir` supplied through MCP are validated against configured roots.
 - Optional LLM/agent providers should run in read-only permission mode unless the user explicitly chooses otherwise.
+- Sci-Hub and LibGen integrations are enabled by default for local researcher workflows. Organizations that require only authorized/open-access retrieval should set `MNEMOSYNE_SCIHUB_ENABLED=false`, `MNEMOSYNE_LIBGEN_ENABLED=false`, and use `--strategy legal_only`.
+- Downloaded PDFs and generated artifacts should remain under configured local data/vault roots; do not point these roots at shared sensitive directories.
 
 ## Non-Goals
 

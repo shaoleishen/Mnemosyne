@@ -8,12 +8,14 @@ The project is designed for local-first research workflows. It stores paper meta
 
 ## What 1.0.0 Means
 
-Version 1.0.0 is the first production-baseline release. It does not mean cloud multi-tenancy, full-text PDF ingestion, or polished academic prose generation. It does mean:
+Version 1.0.0 is the first production-baseline release. It does not mean cloud multi-tenancy or polished academic prose generation. It does mean:
 
 - repeatable local install and test workflow
 - explicit Apache-2.0 license
 - stable CLI entry points: `knowcran` and `mnemosyne`
 - readonly, curate, and admin MCP profiles
+- optional full-text PDF ingestion with local parsing, chunking, FTS5 indexing, and hybrid search
+- managed local service startup for MinerU and OpenAI-compatible local embeddings when configured
 - evidence traceability through `paper_id`, `claim_id`, `citation_key`, `source_quote`, and `evidence_status`
 - SQLite migrations for existing local databases
 - cached, rate-limited Semantic Scholar access with retry behavior
@@ -26,6 +28,8 @@ Version 1.0.0 is the first production-baseline release. It does not mean cloud m
 | Discovery | Search Semantic Scholar, cache raw responses, deduplicate papers, and store topic membership. |
 | Reading | Extract claims from abstracts with deterministic fallback and optional agent/LLM providers. |
 | Evidence | Build evidence matrices with citation keys, source quotes, evidence status, and coverage summaries. |
+| Full Text | Download PDFs, parse pages with MinerU or PyMuPDF, slice chunks, index FTS5, and optionally embed locally. |
+| Search | Run keyword full-text search or hybrid RRF search over FTS5 and dense embeddings. |
 | Review | Generate evidence digests and review drafts from stored claims. |
 | Obsidian | Export papers, claims, topics, reviews, CSV evidence matrices, and BibTeX. |
 | MCP | Serve readonly, curate, and admin MCP profiles for agent clients. |
@@ -42,6 +46,8 @@ knowcran init
 
 Python 3.12 or newer is required.
 
+For published packages, use `pip install knowcran` for the core CLI and MCP server, or `pip install "knowcran[local,rag]"` for managed local embeddings and RAG features.
+
 ## Quick Start
 
 ```bash
@@ -53,6 +59,9 @@ knowcran read-topic "intracerebral hemorrhage" --limit 50
 
 # Generate a traceable review draft.
 knowcran review "intracerebral hemorrhage" --max-papers 50
+
+# Run the local PDF/RAG pipeline when MinerU/embedding services are configured.
+knowcran run-topic "intracerebral hemorrhage" --limit 50 --gpu
 
 # Export Obsidian notes and review artifacts.
 knowcran export-obsidian "intracerebral hemorrhage"
@@ -83,6 +92,7 @@ Environment variables are read from `.env`:
 | `MNEMOSYNE_PDF_STRATEGY` | `fastest` | Download precedence (e.g., direct OA url first, then index sources). |
 | `MNEMOSYNE_SCIHUB_ENABLED` | `true` | Enable Sci-Hub fallback search for downloaded papers. |
 | `MNEMOSYNE_LIBGEN_ENABLED` | `true` | Enable LibGen fallback search for downloaded papers. |
+| `MNEMOSYNE_PDF_BATCH_WORKERS` | `5` | Concurrent PDF download worker count. |
 | `MNEMOSYNE_PDF_PARSER` | `auto` | PDF parser: `auto` (probes MinerU health, falls back to PyMuPDF), `mineru`, or `pymupdf`. |
 | `MINERU_API_URL` / `MNEMOSYNE_MINERU_URL` | `http://127.0.0.1:8000` | Local or remote MinerU API endpoint url. |
 | `MNEMOSYNE_MINERU_MODE` | `managed` | MinerU running mode: `managed`, `external`, or `off`. |
@@ -97,10 +107,12 @@ Environment variables are read from `.env`:
 | `MNEMOSYNE_LOCAL_EMBEDDING_MODEL`| `BAAI/bge-m3` | Model name for local embeddings (e.g. `BAAI/bge-m3`). |
 | `MNEMOSYNE_LOCAL_EMBEDDING_DEVICE`| `cpu` | Device backend for local embeddings: `cpu` or `cuda`. |
 | `MNEMOSYNE_LOCAL_EMBEDDING_BATCH_SIZE`| `16` | Batch size constraint for local vector generation. |
+| `MNEMOSYNE_LOCAL_EMBEDDING_STARTUP_TIMEOUT_SECONDS` | `180` | Managed local embedding startup wait time. |
+| `MNEMOSYNE_MINERU_STARTUP_TIMEOUT_SECONDS` | `180` | Managed MinerU startup wait time. |
 
 ## Local Managed Services (Local Production Mode)
 
-Mnemosyne can automatically manage background dependencies (MinerU and a local OpenAI-compatible embedding server) to achieve a zero-configuration local pipeline.
+Mnemosyne can automatically manage background dependencies (MinerU and a local OpenAI-compatible embedding server) once the local prerequisites are installed and configured.
 
 ### Prerequisites
 
@@ -153,12 +165,16 @@ knowcran services logs mineru
 knowcran services logs embedding
 ```
 
+The local embedding API base may end in `/v1` for OpenAI compatibility; service health checks still probe the service root `/health`.
+
 ### Running the Topic Pipeline with GPU
 
 ```bash
 knowcran run-topic "intracerebral hemorrhage" --limit 50 --gpu
 ```
 The `--gpu` option automatically overrides service devices to CUDA/GPU modes.
+
+For WSL2 + Conda + NVIDIA workstation setup, see `docs/local-wsl-gpu-setup.md`.
 
 ## Sci-Hub & LibGen Compliance Disclaimer
 
@@ -167,7 +183,7 @@ The `--gpu` option automatically overrides service devices to CUDA/GPU modes.
 > - Mnemosyne defaults to enabling Sci-Hub and LibGen integrations (`MNEMOSYNE_SCIHUB_ENABLED=true` and `MNEMOSYNE_LIBGEN_ENABLED=true`) to assist researchers in retrieving academic materials.
 > - Downloading copyrighted scientific papers through these unauthorized index sources may violate intellectual property or copyright laws depending on your jurisdiction.
 > - **The authors and contributors of Mnemosyne assume no liability for user activities.**
-> - To prioritize legal and open-access downloads, the tool always queries direct open-access URLs and official publisher sources first.
+> - Direct open-access PDF URLs from paper metadata are tried before the multi-source downloader. After that, source order depends on the selected strategy; use `--strategy legal_only` to avoid unauthorized sources.
 > - To completely turn off unauthorized sources, modify your `.env` file to set:
 >   ```env
 >   MNEMOSYNE_SCIHUB_ENABLED=false
@@ -232,7 +248,10 @@ The CI workflow runs tests on Linux, macOS, and Windows for Python 3.12 and 3.13
 - `CHANGELOG.md`
 - `ROADMAP.md`
 - `CONTRIBUTING.md`
+- `docs/local-wsl-gpu-setup.md`
+- `docs/fulltext-migration-notes.md`
 - `docs/release/1.0.0-checklist.md`
+- `.github/workflows/release.yml` publishes tagged releases to GitHub Releases and PyPI.
 
 ## License
 

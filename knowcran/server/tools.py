@@ -296,8 +296,8 @@ def get_audit_tools() -> list[dict[str, Any]]:
 
 
 def get_all_tools() -> list[dict[str, Any]]:
-    """Return all MCP tools (read + write + audit + fulltext)."""
-    return get_read_tools() + get_write_tools() + get_audit_tools() + get_fulltext_read_tools() + get_fulltext_write_tools()
+    """Return all MCP tools (read + write + audit + fulltext + vision)."""
+    return get_read_tools() + get_write_tools() + get_audit_tools() + get_fulltext_read_tools() + get_fulltext_write_tools() + get_vision_tools()
 
 
 # ---------------------------------------------------------------------------
@@ -469,6 +469,28 @@ def get_fulltext_read_tools() -> list[dict[str, Any]]:
                 openWorldHint=False,
             ),
         },
+        {
+            "name": "knowcran_answer_rag",
+            "description": "Answer a question using multimodal RAG with evidence from scientific papers. Returns answer with citations, source chunks, media assets, machine-extracted tables, auxiliary interpretations, and audit results.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Question to answer"},
+                    "topic": {"type": "string", "description": "Topic filter (optional)"},
+                    "paper_id": {"type": "string", "description": "Paper ID filter (optional)"},
+                    "limit": {"type": "integer", "description": "Max results (default 20)", "default": 20},
+                    "data_dir": {"type": "string", "description": "Data directory path (optional)"},
+                },
+                "required": ["query"],
+            },
+            "annotations": ToolAnnotations(
+                title="Answer RAG",
+                readOnlyHint=True,
+                destructiveHint=False,
+                idempotentHint=False,
+                openWorldHint=False,
+            ),
+        },
     ]
 
 
@@ -606,6 +628,12 @@ def get_fulltext_write_tools() -> list[dict[str, Any]]:
                     "topic": {"type": "string", "description": "Topic for the pipeline run"},
                     "limit": {"type": "integer", "description": "Max papers (default 50)", "default": 50},
                     "strategy": {"type": "string", "enum": ["fastest", "oa_first", "legal_only", "scihub_only"], "default": "fastest"},
+                    "fulltext": {"type": "boolean", "description": "Use full-text extraction when available (default true)", "default": True},
+                    "skip_discover": {"type": "boolean", "description": "Skip paper discovery step (default false)", "default": False},
+                    "skip_download": {"type": "boolean", "description": "Skip PDF download step (default false)", "default": False},
+                    "skip_parse": {"type": "boolean", "description": "Skip PDF parse step (default false)", "default": False},
+                    "skip_review": {"type": "boolean", "description": "Skip review generation step (default false)", "default": False},
+                    "gpu": {"type": "boolean", "description": "Enable GPU service startup overrides for managed local services (default false)", "default": False},
                     "data_dir": {"type": "string", "description": "Data directory path (optional)"},
                     "vault_dir": {"type": "string", "description": "Vault directory path (optional)"},
                 },
@@ -622,9 +650,74 @@ def get_fulltext_write_tools() -> list[dict[str, Any]]:
     ]
 
 
+def get_vision_tools() -> list[dict[str, Any]]:
+    """Return vision/multimodal MCP tool definitions."""
+    return [
+        {
+            "name": "knowcran_describe_figure",
+            "description": "Describe a figure or table image from a paper using Vision API (multimodal). Returns a detailed textual description of the visual content.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "media_id": {"type": "string", "description": "Media asset ID (from parsed_media_assets)"},
+                    "image_path": {"type": "string", "description": "Direct path to image file (alternative to media_id)"},
+                    "task_type": {"type": "string", "enum": ["describe_media", "table_to_markdown"], "default": "describe_media", "description": "Type of analysis to perform"},
+                    "prompt": {"type": "string", "description": "Custom prompt (uses default if omitted)"},
+                    "data_dir": {"type": "string", "description": "Data directory path (optional)"},
+                },
+            },
+            "annotations": ToolAnnotations(
+                title="Describe Figure",
+                readOnlyHint=True,
+                destructiveHint=False,
+                idempotentHint=True,
+                openWorldHint=False,
+            ),
+        },
+        {
+            "name": "knowcran_extract_table_markdown",
+            "description": "Extract a table from a screenshot image and convert it to Markdown format using Vision API.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "media_id": {"type": "string", "description": "Media asset ID (from parsed_media_assets)"},
+                    "image_path": {"type": "string", "description": "Direct path to table image file (alternative to media_id)"},
+                    "prompt": {"type": "string", "description": "Custom prompt for extraction (optional)"},
+                    "data_dir": {"type": "string", "description": "Data directory path (optional)"},
+                },
+            },
+            "annotations": ToolAnnotations(
+                title="Extract Table Markdown",
+                readOnlyHint=True,
+                destructiveHint=False,
+                idempotentHint=True,
+                openWorldHint=False,
+            ),
+        },
+        {
+            "name": "knowcran_get_media_assets",
+            "description": "Get all extracted figure/table media assets for a paper (screenshots, labels, captions, VLM descriptions).", "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "paper_id": {"type": "string", "description": "Paper ID"},
+                    "data_dir": {"type": "string", "description": "Data directory path (optional)"},
+                },
+                "required": ["paper_id"],
+            },
+            "annotations": ToolAnnotations(
+                title="Get Media Assets",
+                readOnlyHint=True,
+                destructiveHint=False,
+                idempotentHint=True,
+                openWorldHint=False,
+            ),
+        },
+    ]
+
+
 def get_read_only_tools() -> list[dict[str, Any]]:
-    """Return only read-only tools (read + audit + fulltext read, no write)."""
-    return get_read_tools() + get_audit_tools() + get_fulltext_read_tools()
+    """Return only read-only tools (read + audit + fulltext read + vision, no write)."""
+    return get_read_tools() + get_audit_tools() + get_fulltext_read_tools() + get_vision_tools()
 
 
 def get_admin_tools() -> list[dict[str, Any]]:

@@ -522,10 +522,12 @@ def doctor_cmd(
     mineru_url = settings.mineru_api_url
     console.print(f"  MinerU API Endpoint: {mineru_url}")
     if live:
-        import httpx
+        from knowcran.services.manager import probe_mineru_health
         try:
-            httpx.get(mineru_url, timeout=1.5)
-            console.print("    MinerU API Health: [green]Online & Responsive[/green]")
+            if probe_mineru_health(mineru_url):
+                console.print("    MinerU API Health: [green]Online & Responsive[/green]")
+            else:
+                console.print("    MinerU API Health: [yellow]Offline or Unresponsive[/yellow]")
         except Exception as e:
             console.print(f"    MinerU API Health: [yellow]Offline or Unresponsive[/yellow] ({e})")
     else:
@@ -535,11 +537,18 @@ def doctor_cmd(
     # 4. Dense Embeddings
     console.print("[bold]4. Dense Embeddings & Vector Search[/bold]")
     console.print(f"  Embedding Provider: {settings.embedding_provider}")
-    console.print(f"  Embedding Model: {settings.embedding_model}")
-    console.print(f"  Embedding API Base: {settings.openai_api_base}")
-    has_key = bool(settings.openai_api_key)
-    key_status = "[green]Configured[/green]" if has_key else "[red]Missing (Embeddings & vector search will be disabled)[/red]"
-    console.print(f"  OpenAI API Key: {key_status}")
+    if settings.embedding_provider == "local":
+        console.print(f"  Local Embedding Model: {settings.local_embedding_model}")
+        console.print(f"  Local Embedding URL: {settings.local_embedding_url}")
+        console.print(f"  Local Embedding Device: {settings.local_embedding_device}")
+        console.print(f"  Local Embedding Batch Size: {settings.local_embedding_batch_size}")
+        has_key = True
+    else:
+        console.print(f"  Embedding Model: {settings.embedding_model}")
+        console.print(f"  Embedding API Base: {settings.openai_api_base}")
+        has_key = bool(settings.openai_api_key)
+        key_status = "[green]Configured[/green]" if has_key else "[red]Missing (Embeddings & vector search will be disabled)[/red]"
+        console.print(f"  OpenAI API Key: {key_status}")
     if live and has_key and settings.embedding_provider == "openai":
         from knowcran.embeddings import EmbeddingProvider
         try:
@@ -551,8 +560,12 @@ def doctor_cmd(
                 console.print("    OpenAI Embeddings Test: [red]Failed (returned empty/zero vector)[/red]")
         except Exception as e:
             console.print(f"    OpenAI Embeddings Test: [red]Failed[/red] ({e})")
+    elif live and settings.embedding_provider == "local":
+        from knowcran.services.manager import probe_embedding_health
+        status = "[green]Online[/green]" if probe_embedding_health(settings.local_embedding_url) else "[yellow]Offline[/yellow]"
+        console.print(f"    Local Embedding Server: {status}")
     elif live:
-        console.print("    OpenAI Embeddings Test: [dim]Skipped (no key or provider set to none)[/dim]")
+        console.print("    Embeddings Test: [dim]Skipped (no key or provider set to none)[/dim]")
     else:
         console.print("    OpenAI Embeddings Test: [dim]Skipped (run with --live to probe)[/dim]")
     console.print()
@@ -642,11 +655,11 @@ def doctor_cmd(
         # Check docker GPU compatibility
         try:
             if shutil.which("docker"):
-                res = subprocess.run(["docker", "run", "--rm", "--gpus", "all", "alpine", "echo", "success"], capture_output=True, text=True, timeout=5)
-                if "success" in res.stdout:
-                    console.print("  Docker NVIDIA Runtime: [green]Available[/green] (Containers have GPU access)")
+                res = subprocess.run(["docker", "info", "--format", "{{json .Runtimes}}"], capture_output=True, text=True, timeout=5)
+                if "nvidia" in res.stdout:
+                    console.print("  Docker NVIDIA Runtime: [green]Configured[/green]")
                 else:
-                    console.print("  Docker NVIDIA Runtime: [red]Failed[/red] (NVIDIA Container Toolkit might not be configured)")
+                    console.print("  Docker NVIDIA Runtime: [red]Not configured[/red] (NVIDIA Container Toolkit might not be configured)")
                 
                 # Check MinerU local docker image existence
                 try:
@@ -928,6 +941,7 @@ def embedding_server_cmd(
     port: int = typer.Option(8010, help="Port to bind the server to"),
     model: str = typer.Option("BAAI/bge-m3", help="Embedding model name"),
     device: str = typer.Option("cpu", help="Device to run embedding on (cpu/cuda)"),
+    batch_size: int = typer.Option(16, "--batch-size", help="Embedding batch size"),
 ):
     """Start local embedding server (OpenAI-compatible /v1/embeddings)."""
     import uvicorn
@@ -935,6 +949,7 @@ def embedding_server_cmd(
     
     os.environ["MNEMOSYNE_LOCAL_EMBEDDING_MODEL"] = model
     os.environ["MNEMOSYNE_LOCAL_EMBEDDING_DEVICE"] = device
+    os.environ["MNEMOSYNE_LOCAL_EMBEDDING_BATCH_SIZE"] = str(batch_size)
     
     uvicorn.run("knowcran.services.embedding:app", host=host, port=port, log_level="info")
 
@@ -1082,6 +1097,131 @@ def services_logs(
             console.print(l)
     except Exception as e:
         console.print(f"[red]Failed to read logs: {e}[/red]")
+
+
+@app.command("ask-rag")
+def ask_rag(
+    question: str = typer.Argument(..., help="Question to answer"),
+    topic: str | None = typer.Option(None, "--topic", "-t", help="Topic filter"),
+    paper_id: str | None = typer.Option(None, "--paper-id", "-p", help="Paper ID filter"),
+    limit: int = typer.Option(20, "--limit", "-l", help="Max results"),
+    data_dir: str | None = typer.Option(None, "--data-dir", help="Data directory path"),
+    vault_dir: str | None = typer.Option(None, "--vault-dir", help="Vault directory path"),
+) -> None:
+    """Answer a question using multimodal RAG with evidence from scientific papers.
+
+    This command uses LangGraph RAG flow to:
+    1. Retrieve relevant text chunks and media assets
+    2. Separate physical evidence from auxiliary interpretation
+    3. Generate an answer with proper source attribution
+    4. Audit the answer for evidence contract compliance
+
+    Examples:
+        knowcran ask-rag "What is the role of p53 in cancer?" --topic "cancer biology"
+        knowcran ask-rag "How does CRISPR work?" --paper-id "abc123"
+    """
+    settings = _settings(data_dir, vault_dir)
+
+    from knowcran.storage import Storage
+    from knowcran.rag import run_rag_query
+
+    storage = Storage(settings.db_path)
+    try:
+        console.print(f"[bold]Question:[/bold] {question}")
+        if topic:
+            console.print(f"[bold]Topic:[/bold] {topic}")
+        if paper_id:
+            console.print(f"[bold]Paper ID:[/bold] {paper_id}")
+        console.print()
+
+        with console.status("[bold green]Running RAG pipeline..."):
+            result = run_rag_query(
+                query=question,
+                topic=topic,
+                paper_id=paper_id,
+                storage=storage,
+                settings=settings,
+            )
+
+        # Display answer
+        console.print("[bold green]Answer:[/bold green]")
+        console.print(result.get("answer", "No answer generated"))
+        console.print()
+
+        # Display citations
+        citations = result.get("citations", [])
+        if citations:
+            console.print("[bold]Citations:[/bold]")
+            for i, cite in enumerate(citations, 1):
+                console.print(f"  {i}. [{cite.get('source_type', 'unknown')}] {cite.get('reference', '')}")
+            console.print()
+
+        # Display chunks used
+        chunks = result.get("chunks", [])
+        if chunks:
+            console.print(f"[bold]Text Sources:[/bold] {len(chunks)} chunks")
+            for chunk in chunks[:5]:  # Show first 5
+                title = chunk.get("title", "Unknown")
+                page = chunk.get("page_start", "?")
+                console.print(f"  - {title} (Page {page})")
+            if len(chunks) > 5:
+                console.print(f"  ... and {len(chunks) - 5} more")
+            console.print()
+
+        # Display media used
+        media = result.get("media", [])
+        if media:
+            console.print(f"[bold]Media Sources:[/bold] {len(media)} assets")
+            for m in media:
+                label = m.get("figure_label", "Unknown")
+                console.print(f"  - {label}")
+            console.print()
+
+        # Display machine-extracted tables
+        machine_tables = result.get("machine_extracted_tables", [])
+        if machine_tables:
+            console.print(f"[bold]Machine-Extracted Tables:[/bold] {len(machine_tables)}")
+            for t in machine_tables:
+                label = t.get("figure_label", "Unknown")
+                console.print(f"  - {label} (auxiliary)")
+            console.print()
+
+        # Display auxiliary interpretations
+        auxiliary = result.get("auxiliary_interpretations", [])
+        if auxiliary:
+            console.print(f"[bold]Auxiliary Interpretations:[/bold] {len(auxiliary)}")
+            for a in auxiliary:
+                label = a.get("figure_label", "Unknown")
+                console.print(f"  - {label} (VLM description)")
+            console.print()
+
+        # Display audit results
+        audit = result.get("audit", {})
+        if audit:
+            passed = audit.get("passed", True)
+            status_color = "green" if passed else "red"
+            console.print(f"[bold]Audit:[/bold] [{status_color}]{'PASSED' if passed else 'FAILED'}[/{status_color}]")
+
+            violations = audit.get("violations", [])
+            if violations:
+                console.print("[red]Violations:[/red]")
+                for v in violations:
+                    console.print(f"  - {v}")
+
+            warnings = audit.get("warnings", [])
+            if warnings:
+                console.print("[yellow]Warnings:[/yellow]")
+                for w in warnings:
+                    console.print(f"  - {w}")
+            console.print()
+
+        # Display degraded reason if any
+        degraded = result.get("degraded_reason")
+        if degraded:
+            console.print(f"[yellow]Degraded:[/yellow] {degraded}")
+
+    finally:
+        storage.close()
 
 
 def main() -> None:

@@ -26,6 +26,7 @@ def test_required_release_documents_exist() -> None:
         "CONTRIBUTING.md",
         "ROADMAP.md",
         "SECURITY.md",
+        "docs/fulltext-migration-notes.md",
         "docs/release/1.0.0-checklist.md",
         ".github/ISSUE_TEMPLATE/bug_report.md",
         ".github/ISSUE_TEMPLATE/feature_request.md",

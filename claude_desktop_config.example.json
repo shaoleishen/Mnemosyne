@@ -1,0 +1,22 @@
+{
+  "mcpServers": {
+    "knowcran-readonly": {
+      "command": "/home/bioshen/miniforge3/envs/Mnemosyne/bin/knowcran",
+      "args": ["serve-mcp-readonly"],
+      "cwd": "/home/bioshen/Code/Mnemosyne",
+      "env": {
+        "KNOWCRAN_DATA_DIR": "data",
+        "KNOWCRAN_VAULT_DIR": "vault"
+      }
+    },
+    "knowcran-curate": {
+      "command": "/home/bioshen/miniforge3/envs/Mnemosyne/bin/knowcran",
+      "args": ["serve-mcp-curate"],
+      "cwd": "/home/bioshen/Code/Mnemosyne",
+      "env": {
+        "KNOWCRAN_DATA_DIR": "data",
+        "KNOWCRAN_VAULT_DIR": "vault"
+      }
+    }
+  }
+}

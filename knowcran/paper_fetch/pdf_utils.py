@@ -38,19 +38,29 @@ def validate_pdf(data: bytes) -> tuple[bool, str | None]:
     return True, None
 
 
-def safe_filename(title: str, doi: str | None = None, max_len: int = 120) -> str:
+def safe_filename(
+    title: str,
+    doi: str | None = None,
+    arxiv_id: str | None = None,
+    fallback: str | None = None,
+    max_len: int = 120,
+) -> str:
     """Generate a safe filename for a PDF.
 
-    Uses DOI if available, otherwise slugifies the title.
+    Uses DOI if available, then arXiv ID, otherwise slugifies the title.
     """
     if doi:
         # Use DOI as base: 10.1234/example -> 10.1234_example
         name = doi.replace("/", "_").replace(":", "_")
+    elif arxiv_id:
+        name = arxiv_id.replace("/", "_").replace(":", "_")
     else:
         # Slugify title
-        name = _ILLEGAL_CHARS.sub("_", title.lower().strip())
+        name = _ILLEGAL_CHARS.sub("_", (title or fallback or "paper").lower().strip())
         name = re.sub(r"_+", "_", name).strip("_")
         name = re.sub(r"\s+", "_", name)
+        if not name:
+            name = "paper"
     # Truncate
     if len(name) > max_len:
         name = name[:max_len].rstrip("_")

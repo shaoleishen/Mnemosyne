@@ -10,6 +10,8 @@ from knowcran.config import Settings
 from knowcran.services.manager import (
     is_port_in_use,
     probe_health,
+    probe_embedding_health,
+    probe_mineru_health,
     start_services,
     stop_services,
     get_services_status,
@@ -46,8 +48,23 @@ def test_probe_health(mock_get):
     mock_get.side_effect = Exception("error")
     assert not probe_health("http://localhost:8010", "health")
 
+@patch("httpx.get")
+def test_probe_embedding_health_strips_openai_v1_base(mock_get):
+    mock_get.return_value = MagicMock(status_code=200)
+    assert probe_embedding_health("http://localhost:8010/v1")
+    mock_get.assert_called_with("http://localhost:8010/health", timeout=1.5)
+
+@patch("httpx.get")
+def test_probe_mineru_health_requires_mineru_endpoint(mock_get):
+    health_response = MagicMock(status_code=404)
+    openapi_response = MagicMock(status_code=200)
+    openapi_response.json.return_value = {"paths": {"/file_parse": {}}}
+    mock_get.side_effect = [health_response, openapi_response]
+
+    assert probe_mineru_health("http://localhost:8000")
+
 @patch("subprocess.run")
-@patch("knowcran.services.manager.probe_health")
+@patch("knowcran.services.manager.probe_mineru_health")
 @patch("knowcran.services.manager.is_port_in_use")
 def test_start_mineru_docker(mock_in_use, mock_probe, mock_run, tmp_path):
     settings = Settings(
@@ -88,7 +105,7 @@ def test_start_mineru_docker(mock_in_use, mock_probe, mock_run, tmp_path):
     assert args == ["docker", "compose", "-f", str(compose_file), "up", "-d"]
 
 @patch("subprocess.Popen")
-@patch("knowcran.services.manager.probe_health")
+@patch("knowcran.services.manager.probe_embedding_health")
 @patch("knowcran.services.manager.is_port_in_use")
 def test_start_embedding_managed(mock_in_use, mock_probe, mock_popen, tmp_path):
     settings = Settings(

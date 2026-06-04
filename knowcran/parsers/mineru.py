@@ -30,14 +30,12 @@ class MinerUParser(BaseParser):
                 error=f"File not found: {pdf_path}",
             )
 
-        # Retrieve file size
-        file_size = pdf_path.stat().st_size
-        source_hash = hashlib.sha256(pdf_path.name.encode()).hexdigest()[:16]
+        source_hash = self._hash_file(pdf_path)
 
         try:
             logger.info(f"Uploading {pdf_path.name} to MinerU API at {self.api_url}")
             with open(pdf_path, "rb") as f:
-                files = {"file": (pdf_path.name, f, "application/pdf")}
+                files = {"files": (pdf_path.name, f, "application/pdf")}
                 # Call /file_parse or /tasks. We try /file_parse as it is standard synchronous.
                 # Increase timeout to 180s for large files
                 response = httpx.post(
@@ -198,3 +196,10 @@ class MinerUParser(BaseParser):
             if pattern.search(head):
                 return section_name
         return None
+
+    def _hash_file(self, path: Path) -> str:
+        digest = hashlib.sha256()
+        with open(path, "rb") as f:
+            for block in iter(lambda: f.read(1024 * 1024), b""):
+                digest.update(block)
+        return digest.hexdigest()[:16]

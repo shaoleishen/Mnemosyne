@@ -32,7 +32,7 @@ jobs:
 
     - name: Lint and Compile Syntax Check
       run: |
-        python -m compileall knowcran/
+        python -m compileall knowcran tests
 
     - name: Run pytest suite
       run: |
@@ -42,11 +42,13 @@ jobs:
       run: |
         knowcran --help
         mnemosyne --help
+        knowcran doctor
 
     - name: MCP Smoke Test
       run: |
         python -c "from knowcran.server.mcp import _create_readonly_server; _create_readonly_server()"
         python -c "from knowcran.server.mcp import _create_curate_server; _create_curate_server()"
+        python -c "from knowcran.services.manager import probe_embedding_health, probe_mineru_health; print(probe_embedding_health, probe_mineru_health)"
 
   package:
     runs-on: ubuntu-latest

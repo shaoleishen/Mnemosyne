@@ -29,7 +29,7 @@ class DirectUrlSource(SourceBase):
         self._url = url
 
     def fetch(self, doi: str | None, arxiv_id: str | None,
-              title: str | None = None) -> tuple[bytes | None, str | None]:
+              title: str | None = None, pmid: str | None = None) -> tuple[bytes | None, str | None]:
         if not self._url:
             return None, "No URL provided"
         try:

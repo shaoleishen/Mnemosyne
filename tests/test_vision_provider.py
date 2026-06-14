@@ -137,6 +137,22 @@ class TestVisionRouter:
 
         assert providers[0].is_healthy is True
 
+    def test_chat_falls_back_after_failure(self):
+        first = VisionProvider("first", "https://api1.com", "key1", "model1")
+        second = VisionProvider("second", "https://api2.com", "key2", "model2")
+        first.chat = Mock(return_value={"status": "error", "error": "boom", "provider": "first", "model": "model1"})
+        second.chat = Mock(return_value={"status": "success", "content": "ok", "provider": "second", "model": "model2"})
+        router = VisionRouter([first, second])
+
+        result = router.chat([{"role": "user", "content": "hello"}])
+
+        assert result["status"] == "success"
+        assert result["content"] == "ok"
+        assert result["provider"] == "second"
+        assert first.is_healthy is False
+        first.chat.assert_called_once()
+        second.chat.assert_called_once()
+
 
 class TestPrompts:
     """Test prompt functionality."""

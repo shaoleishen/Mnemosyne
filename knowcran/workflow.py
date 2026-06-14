@@ -375,8 +375,9 @@ def run_topic_workflow(
             from knowcran.bibtex import papers_to_bibtex
             from knowcran.utils import slugify
 
-            output = do_review(canonical_topic, max_papers=limit, storage=storage,
-                              vault_dir=settings.vault_dir, fulltext=fulltext)
+            max_review_papers = min(100, limit)
+            output = do_review(canonical_topic, max_papers=max_review_papers, storage=storage,
+                               vault_dir=settings.vault_dir, fulltext=fulltext)
 
             # Copy review artifacts to output directory
             slug = slugify(canonical_topic)

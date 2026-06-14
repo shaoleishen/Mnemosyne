@@ -148,10 +148,17 @@ class TestPrompts:
         assert "trust the physical sources" in RAG_SYSTEM_PROMPT.lower()
 
     def test_format_multimodal_prompt(self):
+        import base64
+        import tempfile
+        from pathlib import Path
+
+        image_path = Path(tempfile.mkdtemp()) / "img.png"
+        image_path.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 12)
+
         messages = format_multimodal_prompt(
             query="What is X?",
             context_texts=[{"title": "Paper 1", "page_start": 1, "section": "Intro", "text": "Text content"}],
-            context_media=[{"figure_label": "Figure 1", "caption_text": "Caption", "image_path": "/path/to/img.png"}],
+            context_media=[{"figure_label": "Figure 1", "caption_text": "Caption", "image_path": str(image_path)}],
             auxiliary_context=[{"source_type": "auxiliary_interpretation", "figure_label": "Figure 1", "description_text": "Description"}],
         )
 
@@ -165,6 +172,8 @@ class TestPrompts:
         assert "Physical Text Evidence" in content_text
         assert "Original Figures/Tables" in content_text
         assert "Auxiliary Interpretation" in content_text
+        assert "file://" not in content_text
+        assert "data:image/png;base64," in content_text
 
     def test_format_text_only_prompt(self):
         messages = format_text_only_prompt(
@@ -175,6 +184,52 @@ class TestPrompts:
         assert len(messages) == 2
         assert messages[0]["role"] == "system"
         assert messages[1]["role"] == "user"
+
+
+class TestRunRagQuery:
+    """Test RAG entrypoint behavior."""
+
+    def test_no_provider_does_not_raise_missing_openai_model(self, tmp_path):
+        from knowcran.config import Settings
+        from knowcran.rag.graph import run_rag_query
+        from knowcran.storage import Storage
+
+        settings = Settings(data_dir=tmp_path, vision_providers="")
+        storage = Storage(tmp_path / "knowcran.sqlite")
+
+        result = run_rag_query("What is known?", storage=storage, settings=settings)
+
+        assert "openai_model" not in str(result)
+        assert result["audit"]["passed"] is False
+        assert result["degraded_reason"]
+        storage.close()
+
+    def test_mock_vision_router_generates_answer(self, tmp_path):
+        from knowcran.config import Settings
+        from knowcran.rag.graph import run_rag_query
+        from knowcran.storage import Storage
+
+        settings = Settings(data_dir=tmp_path, vision_providers="")
+        router = Mock()
+        router.chat.return_value = {
+            "status": "success",
+            "content": "Answer [Source: Physical Text, Paper: Test, Page: 1]",
+            "provider": "mock",
+            "model": "mock-model",
+        }
+        settings.get_vision_router = Mock(return_value=router)
+        storage = Storage(tmp_path / "knowcran.sqlite")
+
+        with patch("knowcran.rag.graph.retrieve", return_value={
+            "raw_retrieved": [{"source_type": "physical_text", "title": "Test", "page_start": 1, "text": "Evidence"}],
+            "degraded_reason": None,
+        }):
+            result = run_rag_query("What is known?", storage=storage, settings=settings)
+
+        assert result["answer"].startswith("Answer")
+        assert result["audit"]["passed"] is True
+        router.chat.assert_called_once()
+        storage.close()
 
 
 class TestSourceTypes:

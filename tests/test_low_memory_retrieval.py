@@ -143,6 +143,67 @@ class TestMultimodalSearch:
 
         storage.close()
 
+    def test_multimodal_search_covers_table_markdown_ocr_and_mentions(self, tmp_path):
+        """Media search should cover machine tables, OCR text, and body mentions."""
+        from knowcran.fulltext import multimodal_search
+
+        db_path = tmp_path / "test.sqlite"
+        storage = Storage(db_path)
+
+        storage.upsert_paper(Mock(
+            paper_id="test_paper",
+            title="Test Paper",
+            abstract=None,
+            year=2024,
+            publication_date=None,
+            venue=None,
+            url=None,
+            doi=None,
+            pmid=None,
+            arxiv_id=None,
+            citation_count=None,
+            reference_count=None,
+            influential_citation_count=None,
+            fields_json=None,
+            authors_json=None,
+            external_ids_json=None,
+            open_access_pdf_json=None,
+            discovered_by=None,
+            relevance_score=None,
+            created_at=None,
+            updated_at=None,
+        ))
+
+        storage.insert_parsed_media_asset(
+            media_id="table_1",
+            paper_id="test_paper",
+            asset_id="asset_1",
+            media_type="table",
+            image_path="/path/to/table.png",
+            figure_label="Table 1",
+            caption_text="Table 1: Baseline data",
+            markdown_table="| Group | Hematoma volume |\n| --- | --- |\n| A | 12 |",
+            ocr_text="OCR says perihematomal edema",
+            extraction_method="vision_api",
+        )
+        storage.insert_media_mention(
+            mention_id="mention_1",
+            media_id="table_1",
+            chunk_id="chunk_1",
+            paper_id="test_paper",
+            mention_text="The MISTIE results are summarized in Table 1.",
+        )
+
+        markdown_result = multimodal_search("Hematoma volume", storage=storage, settings=Mock(db_path=db_path))
+        ocr_result = multimodal_search("perihematomal", storage=storage, settings=Mock(db_path=db_path))
+        mention_result = multimodal_search("MISTIE results", storage=storage, settings=Mock(db_path=db_path))
+
+        assert any(m["media_id"] == "table_1" and m["source_type"] == "machine_extracted_table" for m in markdown_result["media"])
+        assert any(m["media_id"] == "table_1" and m["source_type"] == "machine_extracted_table" for m in ocr_result["media"])
+        assert any(m["media_id"] == "table_1" and m["match_type"] == "body_mention" for m in mention_result["media"])
+
+        storage.close()
+
 
 class TestMediaStorageHelpers:
     """Test media storage helper methods."""
@@ -244,4 +305,37 @@ class TestMediaStorageHelpers:
         assert len(context["mentions"]) == 1
         assert len(context["descriptions"]) == 1
 
+        storage.close()
+
+    def test_delete_parsed_content_removes_media_state(self, tmp_path):
+        db_path = tmp_path / "test.sqlite"
+        storage = Storage(db_path)
+
+        storage.insert_parsed_media_asset(
+            media_id="media_1",
+            paper_id="paper_1",
+            asset_id="asset_1",
+            media_type="figure",
+            image_path="/path/to/image.png",
+        )
+        storage.insert_media_mention(
+            mention_id="mention_1",
+            media_id="media_1",
+            chunk_id="chunk_1",
+            paper_id="paper_1",
+            mention_text="As shown in Figure 1",
+        )
+        storage.insert_media_vlm_description(
+            description_id="desc_1",
+            media_id="media_1",
+            provider="test",
+            model="test",
+            description_text="old description",
+        )
+
+        storage.delete_parsed_content_for_paper("paper_1")
+
+        assert storage.get_media_for_paper("paper_1") == []
+        assert storage.get_media_mentions("media_1") == []
+        assert storage.get_media_vlm_descriptions("media_1") == []
         storage.close()

@@ -2,6 +2,21 @@
 
 All notable changes to Mnemosyne / KnowCran are documented here.
 
+## 1.1.0 - 2026-06-14
+
+### Added
+
+- Multi-modal Obsidian vault note rendering: exports inline figures and tables in paper notes using relative image paths and visual VLM interpretation callouts.
+- Configurable MinerU parser timeout parameter (`MNEMOSYNE_MINERU_TIMEOUT_SECONDS`) to support parsing large/complex academic PDFs.
+- Resilient OpenAI-compatible Vision API/VLM routing failovers, dynamically marking failed providers unhealthy and falling back to backup providers.
+- Data URL Base64 encoding for local figures/tables during multimodal RAG prompt generation, replacing absolute file:// paths.
+- Soft cap for review synthesis: limits review referencing to a maximum of 100 papers to prevent LLM context overflows.
+- Clean cascade delete in SQLite storage for media assets, VLM descriptions, and mentions during paper re-parsing.
+
+### Fixed
+
+- Rerank scoring dictionary parser KeyErrors in `discovery.py` when LLM rerank results are empty or malformed.
+
 ## 1.0.0 - 2026-05-31
 
 ### Added

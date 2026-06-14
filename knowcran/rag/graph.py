@@ -37,7 +37,8 @@ class RAGConfig(TypedDict):
 def create_rag_graph(
     storage: Storage,
     settings: Settings,
-    config: RAGConfig,
+    config: RAGConfig | None = None,
+    vision_router: Any | None = None,
 ) -> StateGraph:
     """Create the LangGraph RAG flow.
 
@@ -62,9 +63,10 @@ def create_rag_graph(
     def generate_node(state: AgentState) -> dict[str, Any]:
         return generate_answer(
             state,
-            api_base=config["api_base"],
-            api_key=config["api_key"],
-            model=config["model"],
+            vision_router=vision_router,
+            api_base=config["api_base"] if config else None,
+            api_key=config["api_key"] if config else None,
+            model=config["model"] if config else None,
         )
 
     def audit_node(state: AgentState) -> dict[str, Any]:
@@ -111,16 +113,26 @@ def run_rag_query(
     settings = settings or Settings()
     storage = storage or Storage(settings.db_path)
 
-    # Default config from settings
+    # Default generation path uses the configured OpenAI-compatible vision
+    # router. Do not use the embedding API settings for answer generation.
+    vision_router = None
     if config is None:
-        config = RAGConfig(
-            api_base=settings.openai_api_base,
-            api_key=settings.openai_api_key,
-            model=settings.openai_model or "gpt-4o",
-        )
+        vision_router = settings.get_vision_router()
+        if vision_router is None:
+            error = "No OpenAI-compatible vision/chat provider configured for RAG generation."
+            return {
+                "answer": f"Error: {error}",
+                "citations": [],
+                "chunks": [],
+                "media": [],
+                "machine_extracted_tables": [],
+                "auxiliary_interpretations": [],
+                "audit": {"passed": False, "violations": [error]},
+                "degraded_reason": error,
+            }
 
     # Create and run the graph
-    graph = create_rag_graph(storage, settings, config)
+    graph = create_rag_graph(storage, settings, config=config, vision_router=vision_router)
 
     # Initial state
     initial_state: AgentState = {

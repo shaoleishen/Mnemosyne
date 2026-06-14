@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 from pathlib import Path
+from unittest.mock import Mock
 
 from knowcran.media.extract import (
     normalize_label,
@@ -114,3 +115,53 @@ class TestMediaAsset:
         assert d["paper_id"] == "test123"
         assert d["media_type"] == "figure"
         assert d["figure_label"] == "Figure 1"
+
+
+class TestVisionEnrichment:
+    """Test Vision API enrichment for media assets."""
+
+    def test_table_asset_gets_markdown_and_description(self, tmp_path):
+        from knowcran.fulltext import _enrich_media_assets_with_vision
+        from knowcran.storage import Storage
+
+        image_path = tmp_path / "table.png"
+        image_path.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 12)
+        storage = Storage(tmp_path / "test.sqlite")
+        asset = MediaAsset(
+            media_id="media-table-1",
+            paper_id="paper-1",
+            asset_id="asset-1",
+            media_type="table",
+            figure_label="Table 1",
+            image_path=str(image_path),
+        )
+        storage.insert_parsed_media_assets([asset.to_dict()])
+
+        router = Mock()
+        router.describe_media.side_effect = [
+            {
+                "status": "success",
+                "description": "A table of outcomes.",
+                "provider": "mock",
+                "model": "mock-vl",
+                "source_type": "auxiliary_interpretation",
+            },
+            {
+                "status": "success",
+                "description": "| Group | Outcome |\n| --- | --- |\n| A | 1 |",
+                "provider": "mock",
+                "model": "mock-vl",
+                "source_type": "machine_extracted_table",
+            },
+        ]
+
+        details = _enrich_media_assets_with_vision([asset], storage, router)
+
+        updated = storage.get_media_asset("media-table-1")
+        descriptions = storage.get_media_vlm_descriptions("media-table-1")
+        assert updated["markdown_table"].startswith("| Group")
+        assert updated["ocr_text"].startswith("| Group")
+        assert updated["extraction_method"] == "vision_api"
+        assert len(descriptions) == 1
+        assert details[0]["description"].startswith("A table")
+        storage.close()

@@ -124,6 +124,50 @@ class VisionRouter:
             "source_type": "auxiliary_interpretation",
         }
 
+    def chat(
+        self,
+        messages: list[dict[str, Any]],
+        max_tokens: int = 4096,
+    ) -> dict[str, Any]:
+        """Generate chat output using the first healthy provider.
+
+        Health refresh is failure-triggered: a failed provider is marked
+        unhealthy and the request is retried on the next configured provider.
+        """
+        last_error = None
+
+        for provider in self.providers:
+            if not provider.is_healthy:
+                continue
+
+            try:
+                result = provider.chat(messages=messages, max_tokens=max_tokens)
+
+                if result.get("status") == "success":
+                    self._save_health_state()
+                    return result
+
+                last_error = result.get("error", "Unknown error")
+                provider.mark_unhealthy()
+                logger.warning(
+                    f"Vision provider {provider.name} chat failed: {last_error}"
+                )
+            except Exception as e:
+                last_error = str(e)
+                provider.mark_unhealthy()
+                logger.warning(
+                    f"Vision provider {provider.name} chat exception: {e}"
+                )
+
+        self._save_health_state()
+        return {
+            "content": "",
+            "provider": "none",
+            "model": "none",
+            "status": "error",
+            "error": f"All vision providers failed. Last error: {last_error}",
+        }
+
     def reset_health(self) -> None:
         """Reset all providers to healthy state."""
         for provider in self.providers:

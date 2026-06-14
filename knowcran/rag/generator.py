@@ -8,8 +8,6 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-import httpx
-
 from knowcran.rag.state import AgentState
 from knowcran.rag.prompts import format_multimodal_prompt, format_text_only_prompt
 
@@ -18,9 +16,10 @@ logger = logging.getLogger(__name__)
 
 def generate_answer(
     state: AgentState,
-    api_base: str,
-    api_key: str,
-    model: str,
+    vision_router: Any | None = None,
+    api_base: str | None = None,
+    api_key: str | None = None,
+    model: str | None = None,
 ) -> dict[str, Any]:
     """Generate an answer using the OpenAI-compatible provider.
 
@@ -32,9 +31,10 @@ def generate_answer(
 
     Args:
         state: Current RAG agent state
-        api_base: API base URL
-        api_key: API key
-        model: Model name
+        vision_router: OpenAI-compatible provider router
+        api_base: Legacy direct API base URL
+        api_key: Legacy direct API key
+        model: Legacy direct model name
 
     Returns:
         Updated state with final_response
@@ -61,7 +61,27 @@ def generate_answer(
             context_texts=context_texts,
         )
 
-    # Call the API
+    # Call the API via the shared vision router when available.
+    if vision_router is not None:
+        result = vision_router.chat(messages=messages, max_tokens=4096)
+        if result.get("status") == "success":
+            return {"final_response": result.get("content", "")}
+        error = result.get("error", "No healthy vision providers configured")
+        logger.error(f"Generation failed through vision router: {error}")
+        return {
+            "final_response": f"Error generating response: {error}",
+            "degraded_reason": error,
+        }
+
+    if not (api_base and api_key and model):
+        error = "No OpenAI-compatible vision/chat provider configured for RAG generation."
+        logger.error(error)
+        return {
+            "final_response": f"Error generating response: {error}",
+            "degraded_reason": error,
+        }
+
+    # Legacy direct API call path for explicit configs.
     try:
         response = _call_chat_api(
             messages=messages,
@@ -72,7 +92,10 @@ def generate_answer(
         return {"final_response": response}
     except Exception as e:
         logger.error(f"Generation failed: {e}")
-        return {"final_response": f"Error generating response: {e}"}
+        return {
+            "final_response": f"Error generating response: {e}",
+            "degraded_reason": str(e),
+        }
 
 
 def _call_chat_api(
@@ -104,6 +127,8 @@ def _call_chat_api(
         "messages": messages,
         "max_tokens": max_tokens,
     }
+
+    import httpx
 
     with httpx.Client(timeout=120.0) as client:
         response = client.post(url, json=payload, headers=headers)

@@ -223,6 +223,8 @@ knowcran review "intracerebral hemorrhage" --max-papers 30 --fulltext
 knowcran export-obsidian "intracerebral hemorrhage"
 ```
 
+> 💡 **新特性**：最新版支持多模态图表原图在 Obsidian 中的直观渲染！图片和 mimo 大模型的视觉解析将以 callout 形式内嵌在导出的 Markdown 文献卡片中。详情请参考 [多模态 Obsidian 导出与跑批稳定性升级说明](docs/obsidian_multimodal_upgrade.md)。
+
 #### 环境诊断
 
 ```bash

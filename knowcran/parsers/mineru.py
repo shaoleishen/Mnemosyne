@@ -15,8 +15,9 @@ from knowcran.pdf_parse import _SECTION_PATTERNS  # Reuse section patterns
 logger = logging.getLogger(__name__)
 
 class MinerUParser(BaseParser):
-    def __init__(self, api_url: str = "http://127.0.0.1:8000"):
+    def __init__(self, api_url: str = "http://127.0.0.1:8000", timeout: float = 180.0):
         self.api_url = api_url.rstrip("/")
+        self.timeout = timeout
 
     def parse(self, pdf_path: Path, paper_id: str, asset_id: str) -> ParsedDocument:
         pdf_path = Path(pdf_path)
@@ -37,11 +38,11 @@ class MinerUParser(BaseParser):
             with open(pdf_path, "rb") as f:
                 files = {"files": (pdf_path.name, f, "application/pdf")}
                 # Call /file_parse or /tasks. We try /file_parse as it is standard synchronous.
-                # Increase timeout to 180s for large files
+                # Increase timeout to self.timeout for large files
                 response = httpx.post(
                     f"{self.api_url}/file_parse",
                     files=files,
-                    timeout=180.0
+                    timeout=self.timeout
                 )
 
             if response.status_code != 200:

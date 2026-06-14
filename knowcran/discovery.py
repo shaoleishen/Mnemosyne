@@ -224,10 +224,14 @@ def _agent_rerank(papers: list[PaperRecord], topic: str, provider: Any, storage:
         console.print(f"  [dim]{format_workflow_summary(summary)}[/dim]")
 
         # Apply scores back to PaperRecord objects
-        score_map = {d["paper_id"]: d.get("score", 0.5) for d in
-                     (chunk.output.get("decisions", []) if chunk.output else []
-                      for chunk in summary.chunks if chunk.status in ("completed", "fallback_used"))
-                     for d in chunk.output.get("decisions", [])}
+        score_map = {}
+        for chunk in summary.chunks:
+            if chunk.status in ("completed", "fallback_used") and chunk.output:
+                decisions = chunk.output.get("decisions", [])
+                for d in decisions:
+                    if "paper_id" in d:
+                        score_map[d["paper_id"]] = d.get("score", 0.5)
+
 
         for p in papers:
             if p.paper_id in score_map:

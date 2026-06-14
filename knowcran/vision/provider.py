@@ -120,38 +120,28 @@ class VisionProvider:
                 "source_type": "auxiliary_interpretation",
             }
 
-        # Build the request payload
-        payload = {
-            "model": self.model,
-            "messages": [
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": prompt},
-                        {
-                            "type": "image_url",
-                            "image_url": {"url": image_data},
-                        },
-                    ],
-                }
-            ],
-            "max_tokens": 4096,
-        }
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": prompt},
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": image_data},
+                    },
+                ],
+            }
+        ]
 
-        # Make the API request
-        try:
-            result = self._call_api(payload)
-            description = _extract_content(result)
-
-            self.mark_healthy()
-
+        result = self.chat(messages=messages, max_tokens=4096)
+        if result.get("status") == "success":
             source_type = (
                 "machine_extracted_table" if task_type == "table_to_markdown"
                 else "auxiliary_interpretation"
             )
 
             return {
-                "description": description,
+                "description": result.get("content", ""),
                 "provider": self.name,
                 "model": self.model,
                 "status": "success",
@@ -159,16 +149,50 @@ class VisionProvider:
                 "source_type": source_type,
             }
 
+        return {
+            "description": "",
+            "provider": self.name,
+            "model": self.model,
+            "status": "error",
+            "error": result.get("error", "Unknown error"),
+            "source_type": "auxiliary_interpretation",
+        }
+
+    def chat(
+        self,
+        messages: list[dict[str, Any]],
+        max_tokens: int = 4096,
+    ) -> dict[str, Any]:
+        """Call the OpenAI-compatible chat API.
+
+        Returns a structured result instead of raising so routers can fallback
+        consistently across answer generation and media extraction.
+        """
+        payload = {
+            "model": self.model,
+            "messages": messages,
+            "max_tokens": max_tokens,
+        }
+
+        try:
+            result = self._call_api(payload)
+            self.mark_healthy()
+            return {
+                "content": _extract_content(result),
+                "provider": self.name,
+                "model": self.model,
+                "status": "success",
+                "error": None,
+            }
         except Exception as e:
             self.mark_unhealthy()
-            logger.error(f"Vision API call failed for {self.name}: {e}")
+            logger.error(f"Vision API chat call failed for {self.name}: {e}")
             return {
-                "description": "",
+                "content": "",
                 "provider": self.name,
                 "model": self.model,
                 "status": "error",
                 "error": str(e),
-                "source_type": "auxiliary_interpretation",
             }
 
     def _call_api(self, payload: dict[str, Any]) -> dict[str, Any]:

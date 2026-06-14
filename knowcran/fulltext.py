@@ -289,6 +289,73 @@ def get_pdf_status(
     return storage.get_pdf_status_summary()
 
 
+def _enrich_media_assets_with_vision(
+    media_assets: list[Any],
+    storage: Storage,
+    vision_router: Any | None,
+) -> list[dict[str, Any]]:
+    """Generate auxiliary media descriptions and table Markdown.
+
+    VLM descriptions and Vision-generated table Markdown remain machine
+    generated context. They are stored separately from physical PDF text.
+    """
+    if not vision_router:
+        return []
+
+    media_descriptions = []
+    for asset in media_assets:
+        if not asset.image_path or not Path(asset.image_path).exists():
+            continue
+
+        try:
+            result = vision_router.describe_media(
+                image_path=asset.image_path,
+                task_type="describe_media",
+            )
+            if result.get("status") == "success":
+                storage.insert_media_vlm_description(
+                    description_id=str(uuid.uuid4()),
+                    media_id=asset.media_id,
+                    provider=result.get("provider", "unknown"),
+                    model=result.get("model", "unknown"),
+                    description_text=result.get("description", ""),
+                    source_type=result.get("source_type", "auxiliary_interpretation"),
+                    status="success",
+                )
+                media_descriptions.append({
+                    "media_id": asset.media_id,
+                    "provider": result.get("provider"),
+                    "description": result.get("description", "")[:200],
+                })
+                logger.info(f"Vision described {asset.figure_label or asset.media_id[:8]}")
+
+            if asset.media_type == "table":
+                from knowcran.media.table_markdown import table_to_markdown
+
+                table_result = table_to_markdown(asset.image_path, provider=vision_router)
+                markdown = table_result.get("markdown", "")
+                if markdown:
+                    storage.update_media_table_extraction(
+                        media_id=asset.media_id,
+                        markdown_table=markdown,
+                        ocr_text=markdown,
+                        extraction_method="vision_api",
+                        confidence=table_result.get("confidence", 0.85),
+                    )
+                    asset.markdown_table = markdown
+                    asset.ocr_text = markdown
+                    asset.extraction_method = "vision_api"
+                    asset.confidence = table_result.get("confidence", 0.85)
+                elif table_result.get("error"):
+                    logger.warning(
+                        f"Vision table extraction failed for {asset.media_id}: {table_result['error']}"
+                    )
+        except Exception as e:
+            logger.warning(f"Vision API failed for {asset.media_id}: {e}")
+
+    return media_descriptions
+
+
 def parse_paper_pdf(
     paper_id: str,
     storage: Storage | None = None,
@@ -347,7 +414,7 @@ def parse_paper_pdf(
             except Exception as e:
                 logger.warning(f"Failed to update asset with degraded reason: {e}")
 
-    parser = MinerUParser(api_url=settings.mineru_api_url) if parser_type == "mineru" else PyMuPDFParser()
+    parser = MinerUParser(api_url=settings.mineru_api_url, timeout=settings.mineru_timeout_seconds) if parser_type == "mineru" else PyMuPDFParser()
 
     logger.info(f"Parsing PDF for paper {paper_id} using {parser_type} (file: {downloaded['file_path']})")
     try:
@@ -435,33 +502,11 @@ def parse_paper_pdf(
 
                 # Vision API: describe each figure/table
                 vision_router = settings.get_vision_router()
-                if vision_router:
-                    for asset in media_assets:
-                        if not asset.image_path or not Path(asset.image_path).exists():
-                            continue
-                        try:
-                            result = vision_router.describe_media(
-                                image_path=asset.image_path,
-                                task_type="describe_media",
-                            )
-                            if result.get("status") == "success":
-                                storage.insert_media_vlm_description(
-                                    description_id=str(uuid.uuid4()),
-                                    media_id=asset.media_id,
-                                    provider=result.get("provider", "unknown"),
-                                    model=result.get("model", "unknown"),
-                                    description_text=result.get("description", ""),
-                                    source_type=result.get("source_type", "auxiliary_interpretation"),
-                                    status="success",
-                                )
-                                media_descriptions.append({
-                                    "media_id": asset.media_id,
-                                    "provider": result.get("provider"),
-                                    "description": result.get("description", "")[:200],
-                                })
-                                logger.info(f"Vision described {asset.figure_label or asset.media_id[:8]}")
-                        except Exception as e:
-                            logger.warning(f"Vision API failed for {asset.media_id}: {e}")
+                media_descriptions = _enrich_media_assets_with_vision(
+                    media_assets=media_assets,
+                    storage=storage,
+                    vision_router=vision_router,
+                )
         except Exception as e:
             logger.warning(f"Media extraction failed for paper {paper_id}: {e}")
 
@@ -972,10 +1017,19 @@ def multimodal_search(
         settings=settings,
     )
 
-    # 2. Search media assets by caption text and VLM descriptions
+    # 2. Search media assets by caption, machine table extraction, OCR,
+    # body mentions, and VLM descriptions.
     media_results = []
     try:
-        # Search in caption_text
+        like = f"%{query}%"
+
+        def add_media_result(row: Any, source_type: str, match_type: str) -> None:
+            media_dict = dict(row)
+            media_dict["source_type"] = source_type
+            media_dict["match_type"] = match_type
+            media_results.append(media_dict)
+
+        # Search in physical captions and machine-extracted table fields.
         if topic:
             canonical_topic = storage.resolve_topic(topic)
             media_rows = storage.conn.execute(
@@ -983,20 +1037,28 @@ def multimodal_search(
                    FROM parsed_media_assets m
                    INNER JOIN papers p ON m.paper_id = p.paper_id
                    INNER JOIN topic_papers tp ON m.paper_id = tp.paper_id
-                   WHERE tp.topic = ? AND m.caption_text LIKE ?
+                   WHERE tp.topic = ? AND (
+                       m.caption_text LIKE ?
+                       OR m.markdown_table LIKE ?
+                       OR m.ocr_text LIKE ?
+                   )
                    ORDER BY m.page_number
                    LIMIT ?""",
-                (canonical_topic, f"%{query}%", limit),
+                (canonical_topic, like, like, like, limit),
             ).fetchall()
         elif paper_id:
             media_rows = storage.conn.execute(
                 """SELECT m.*, p.title, p.year, p.doi
                    FROM parsed_media_assets m
                    INNER JOIN papers p ON m.paper_id = p.paper_id
-                   WHERE m.paper_id = ? AND m.caption_text LIKE ?
+                   WHERE m.paper_id = ? AND (
+                       m.caption_text LIKE ?
+                       OR m.markdown_table LIKE ?
+                       OR m.ocr_text LIKE ?
+                   )
                    ORDER BY m.page_number
                    LIMIT ?""",
-                (paper_id, f"%{query}%", limit),
+                (paper_id, like, like, like, limit),
             ).fetchall()
         else:
             media_rows = storage.conn.execute(
@@ -1004,40 +1066,116 @@ def multimodal_search(
                    FROM parsed_media_assets m
                    INNER JOIN papers p ON m.paper_id = p.paper_id
                    WHERE m.caption_text LIKE ?
+                      OR m.markdown_table LIKE ?
+                      OR m.ocr_text LIKE ?
                    ORDER BY m.page_number
                    LIMIT ?""",
-                (f"%{query}%", limit),
+                (like, like, like, limit),
             ).fetchall()
 
         for row in media_rows:
-            media_dict = dict(row)
-            media_dict["source_type"] = "original_media"
-            media_dict["match_type"] = "caption"
-            media_results.append(media_dict)
+            row_dict = dict(row)
+            q = query.casefold()
+            if q in (row_dict.get("markdown_table") or "").casefold():
+                add_media_result(row, "machine_extracted_table", "markdown_table")
+            elif q in (row_dict.get("ocr_text") or "").casefold():
+                add_media_result(row, "machine_extracted_table", "ocr_text")
+            else:
+                add_media_result(row, "original_media", "caption")
+
+        # Search body mentions that link text chunks to media assets.
+        if topic:
+            mention_rows = storage.conn.execute(
+                """SELECT m.*, mm.mention_text, p.title, p.year, p.doi
+                   FROM media_mentions mm
+                   INNER JOIN parsed_media_assets m ON mm.media_id = m.media_id
+                   INNER JOIN papers p ON m.paper_id = p.paper_id
+                   INNER JOIN topic_papers tp ON m.paper_id = tp.paper_id
+                   WHERE tp.topic = ? AND mm.mention_text LIKE ?
+                   LIMIT ?""",
+                (canonical_topic, like, limit),
+            ).fetchall()
+        elif paper_id:
+            mention_rows = storage.conn.execute(
+                """SELECT m.*, mm.mention_text, p.title, p.year, p.doi
+                   FROM media_mentions mm
+                   INNER JOIN parsed_media_assets m ON mm.media_id = m.media_id
+                   INNER JOIN papers p ON m.paper_id = p.paper_id
+                   WHERE m.paper_id = ? AND mm.mention_text LIKE ?
+                   LIMIT ?""",
+                (paper_id, like, limit),
+            ).fetchall()
+        else:
+            mention_rows = storage.conn.execute(
+                """SELECT m.*, mm.mention_text, p.title, p.year, p.doi
+                   FROM media_mentions mm
+                   INNER JOIN parsed_media_assets m ON mm.media_id = m.media_id
+                   INNER JOIN papers p ON m.paper_id = p.paper_id
+                   WHERE mm.mention_text LIKE ?
+                   LIMIT ?""",
+                (like, limit),
+            ).fetchall()
+
+        for row in mention_rows:
+            add_media_result(row, "original_media", "body_mention")
 
         # Also search VLM descriptions
-        vlm_rows = storage.conn.execute(
-            """SELECT v.*, m.media_type, m.figure_label, m.image_path, m.page_number,
-                      p.title, p.year, p.doi
-               FROM media_vlm_descriptions v
-               INNER JOIN parsed_media_assets m ON v.media_id = m.media_id
-               INNER JOIN papers p ON m.paper_id = p.paper_id
-               WHERE v.description_text LIKE ? AND v.status = 'success'
-               LIMIT ?""",
-            (f"%{query}%", limit),
-        ).fetchall()
+        if topic:
+            vlm_rows = storage.conn.execute(
+                """SELECT v.*, m.media_type, m.figure_label, m.image_path, m.page_number,
+                          m.caption_text, m.markdown_table, m.ocr_text,
+                          p.title, p.year, p.doi
+                   FROM media_vlm_descriptions v
+                   INNER JOIN parsed_media_assets m ON v.media_id = m.media_id
+                   INNER JOIN papers p ON m.paper_id = p.paper_id
+                   INNER JOIN topic_papers tp ON m.paper_id = tp.paper_id
+                   WHERE tp.topic = ? AND v.description_text LIKE ? AND v.status = 'success'
+                   LIMIT ?""",
+                (canonical_topic, like, limit),
+            ).fetchall()
+        elif paper_id:
+            vlm_rows = storage.conn.execute(
+                """SELECT v.*, m.media_type, m.figure_label, m.image_path, m.page_number,
+                          m.caption_text, m.markdown_table, m.ocr_text,
+                          p.title, p.year, p.doi
+                   FROM media_vlm_descriptions v
+                   INNER JOIN parsed_media_assets m ON v.media_id = m.media_id
+                   INNER JOIN papers p ON m.paper_id = p.paper_id
+                   WHERE m.paper_id = ? AND v.description_text LIKE ? AND v.status = 'success'
+                   LIMIT ?""",
+                (paper_id, like, limit),
+            ).fetchall()
+        else:
+            vlm_rows = storage.conn.execute(
+                """SELECT v.*, m.media_type, m.figure_label, m.image_path, m.page_number,
+                          m.caption_text, m.markdown_table, m.ocr_text,
+                          p.title, p.year, p.doi
+                   FROM media_vlm_descriptions v
+                   INNER JOIN parsed_media_assets m ON v.media_id = m.media_id
+                   INNER JOIN papers p ON m.paper_id = p.paper_id
+                   WHERE v.description_text LIKE ? AND v.status = 'success'
+                   LIMIT ?""",
+                (like, limit),
+            ).fetchall()
 
         for row in vlm_rows:
-            media_dict = dict(row)
-            media_dict["source_type"] = "auxiliary_interpretation"
-            media_dict["match_type"] = "vlm_description"
-            media_results.append(media_dict)
+            add_media_result(row, "auxiliary_interpretation", "vlm_description")
 
     except Exception as e:
         logger.warning(f"Media search failed: {e}")
 
+    # Deduplicate while preserving first-match ordering.
+    deduped_media = []
+    seen_media = set()
+    for media in media_results:
+        key = (media.get("media_id"), media.get("source_type"), media.get("match_type"))
+        if key in seen_media:
+            continue
+        seen_media.add(key)
+        deduped_media.append(media)
+
     return {
         "chunks": list(chunk_results),
-        "media": media_results[:limit],
+        "media": deduped_media[:limit],
         "degraded_reason": chunk_results.degraded_reason if hasattr(chunk_results, "degraded_reason") else None,
     }

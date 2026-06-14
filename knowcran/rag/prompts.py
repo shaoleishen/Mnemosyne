@@ -7,6 +7,10 @@ These prompts enforce the evidence contract:
 
 from __future__ import annotations
 
+from pathlib import Path
+
+from knowcran.vision.provider import _encode_image_as_data_url
+
 # System prompt for the RAG generator
 RAG_SYSTEM_PROMPT = """You are a scientific evidence assistant. Your task is to answer questions based on the provided evidence from scientific papers.
 
@@ -103,10 +107,17 @@ def format_multimodal_prompt(
 
             # Add image if available
             if image_path:
-                content_parts.append({
-                    "type": "image_url",
-                    "image_url": {"url": f"file://{image_path}"},
-                })
+                try:
+                    image_url = _encode_image_as_data_url(Path(image_path))
+                    content_parts.append({
+                        "type": "image_url",
+                        "image_url": {"url": image_url},
+                    })
+                except Exception:
+                    content_parts.append({
+                        "type": "text",
+                        "text": f"[Image unavailable locally: {image_path}]\n\n",
+                    })
 
     # Add auxiliary context
     if auxiliary_context:

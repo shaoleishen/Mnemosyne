@@ -1211,6 +1211,15 @@ class Storage:
         )
         self.conn.execute("DELETE FROM paper_chunks WHERE paper_id = ?", (paper_id,))
         self.conn.execute("DELETE FROM paper_fulltext_chunks WHERE paper_id = ?", (paper_id,))
+        self.conn.execute(
+            """DELETE FROM media_vlm_descriptions
+            WHERE media_id IN (
+                SELECT media_id FROM parsed_media_assets WHERE paper_id = ?
+            )""",
+            (paper_id,),
+        )
+        self.conn.execute("DELETE FROM media_mentions WHERE paper_id = ?", (paper_id,))
+        self.conn.execute("DELETE FROM parsed_media_assets WHERE paper_id = ?", (paper_id,))
         self.conn.execute("DELETE FROM parsed_elements WHERE paper_id = ?", (paper_id,))
         self.conn.execute("DELETE FROM parsed_pages WHERE paper_id = ?", (paper_id,))
         self.conn.execute("DELETE FROM parsed_documents WHERE paper_id = ?", (paper_id,))
@@ -1574,6 +1583,19 @@ class Storage:
             (paper_id,),
         ).fetchall()
         return [dict(r) for r in rows]
+
+    def update_media_table_extraction(self, media_id: str, markdown_table: str | None = None,
+                                      ocr_text: str | None = None,
+                                      extraction_method: str | None = None,
+                                      confidence: float | None = None) -> None:
+        """Update machine-extracted table fields for a media asset."""
+        self.conn.execute(
+            """UPDATE parsed_media_assets
+            SET markdown_table = ?, ocr_text = ?, extraction_method = ?, confidence = ?
+            WHERE media_id = ?""",
+            (markdown_table, ocr_text, extraction_method, confidence, media_id),
+        )
+        self.conn.commit()
 
     # --- Media Mentions ---
 

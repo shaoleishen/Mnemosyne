@@ -47,6 +47,7 @@ def _paper_note(
     pdf_path: str | None = None,
     parser_name: str | None = None,
     evidence_status: str = "abstract_only",
+    media_assets: list[dict[str, Any]] | None = None,
 ) -> str:
     chunks_list = chunks or []
     yaml = f"""---
@@ -121,6 +122,36 @@ tags:
             sec_str = f" - {chunk['section']}" if chunk.get("section") else ""
             body += f"- [[{chunk['chunk_id']}|Chunk {chunk['chunk_index']} (Pages {chunk['page_start']}-{chunk['page_end']}{sec_str})]]\n"
         body += "\n"
+
+    if media_assets:
+        body += "## Figures and Tables\n\n"
+        for m in media_assets:
+            label = m.get("figure_label") or m.get("media_type", "media").title()
+            body += f"### {label}\n\n"
+            
+            img_path = m.get("image_path")
+            if img_path:
+                # Resolve relative path from vault/papers/ to data/runtime/media/
+                from pathlib import Path
+                parts = Path(img_path).parts
+                if len(parts) > 2 and parts[0] == "projects":
+                    rel_path = "../../" + "/".join(parts[2:])
+                else:
+                    rel_path = "../../" + img_path
+                body += f"![{label}]({rel_path})\n\n"
+                
+            if m.get("caption_text"):
+                body += f"**Caption**: {m['caption_text']}\n\n"
+                
+            if m.get("vlm_description"):
+                body += f"> [!info] Vision VLM Interpretation\n"
+                for line in m["vlm_description"].split("\n"):
+                    body += f"> {line}\n"
+                body += "\n"
+                
+            if m.get("media_type") == "table" and m.get("markdown_table"):
+                body += "#### Extracted Table Markdown\n\n"
+                body += m["markdown_table"] + "\n\n"
 
     return yaml + body
 
@@ -265,8 +296,17 @@ def export_obsidian(topic: str, storage: Storage | None = None, vault_dir: Path 
                 (chunks_dir / f"{chunk['chunk_id']}.md").write_text(_chunk_note(chunk, stem, ckey), encoding="utf-8")
                 chunks_count += 1
 
+            # Fetch media assets and attach VLM descriptions
+            media_assets = storage.get_media_for_paper(p["paper_id"])
+            media_list = []
+            for m in media_assets:
+                m_copy = dict(m)
+                descriptions = storage.get_media_vlm_descriptions(m["media_id"])
+                m_copy["vlm_description"] = descriptions[0]["description_text"] if descriptions else ""
+                media_list.append(m_copy)
+
             (papers_dir / filename).write_text(
-                _paper_note(p, paper_claims, links, chunks, ckey, pdf_path, parser_name, evidence_status),
+                _paper_note(p, paper_claims, links, chunks, ckey, pdf_path, parser_name, evidence_status, media_list),
                 encoding="utf-8"
             )
 

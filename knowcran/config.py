@@ -94,6 +94,8 @@ class Settings:
     local_embedding_batch_size: int = field(default_factory=lambda: int(os.getenv("MNEMOSYNE_LOCAL_EMBEDDING_BATCH_SIZE", "16")))
     local_embedding_startup_timeout_seconds: int = field(default_factory=lambda: int(os.getenv("MNEMOSYNE_LOCAL_EMBEDDING_STARTUP_TIMEOUT_SECONDS", "180")))
     mineru_startup_timeout_seconds: int = field(default_factory=lambda: int(os.getenv("MNEMOSYNE_MINERU_STARTUP_TIMEOUT_SECONDS", "180")))
+    mineru_timeout_seconds: int = field(default_factory=lambda: int(os.getenv("MNEMOSYNE_MINERU_TIMEOUT_SECONDS", "300")))
+
 
     # Vision API settings (multimodal)
     vision_providers: str = field(default_factory=lambda: os.getenv("MNEMOSYNE_VISION_PROVIDERS", ""))

@@ -352,6 +352,10 @@ def _enrich_media_assets_with_vision(
                     )
         except Exception as e:
             logger.warning(f"Vision API failed for {asset.media_id}: {e}")
+            try:
+                storage.conn.rollback()
+            except Exception:
+                pass
 
     return media_descriptions
 
@@ -413,6 +417,10 @@ def parse_paper_pdf(
                 )
             except Exception as e:
                 logger.warning(f"Failed to update asset with degraded reason: {e}")
+                try:
+                    storage.conn.rollback()
+                except Exception:
+                    pass
 
     parser = MinerUParser(api_url=settings.mineru_api_url, timeout=settings.mineru_timeout_seconds) if parser_type == "mineru" else PyMuPDFParser()
 
@@ -440,6 +448,10 @@ def parse_paper_pdf(
             )
         except Exception as e:
             logger.warning(f"Failed to update asset for fallback: {e}")
+            try:
+                storage.conn.rollback()
+            except Exception:
+                pass
 
         fallback_parser = PyMuPDFParser()
         try:
@@ -509,6 +521,10 @@ def parse_paper_pdf(
                 )
         except Exception as e:
             logger.warning(f"Media extraction failed for paper {paper_id}: {e}")
+            try:
+                storage.conn.rollback()
+            except Exception:
+                pass
 
         # Chunk elements
         from knowcran.parsers.chunker import chunk_elements
@@ -552,12 +568,20 @@ def parse_paper_pdf(
             embedding_status = "failed"
             embedding_error = str(e)
             logger.error(f"Failed to generate embeddings for parsed chunks: {e}")
+            try:
+                storage.conn.rollback()
+            except Exception:
+                pass
 
         # Sync FTS index
         try:
             storage.sync_chunk_fts()
         except Exception as e:
             logger.warning(f"FTS sync failed: {e}")
+            try:
+                storage.conn.rollback()
+            except Exception:
+                pass
 
         return {
             "success": True,

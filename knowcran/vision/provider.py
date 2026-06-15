@@ -53,6 +53,11 @@ class VisionProvider:
     @property
     def is_healthy(self) -> bool:
         """Check if the provider is healthy."""
+        if not self._healthy and self._last_failure:
+            cooldown = 60.0  # 1 minute cooldown
+            if time.time() - self._last_failure > cooldown:
+                logger.info(f"Vision provider {self.name} cooldown expired, retrying...")
+                return True
         return self._healthy
 
     def mark_unhealthy(self) -> None:

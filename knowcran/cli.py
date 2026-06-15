@@ -181,6 +181,7 @@ def read_topic_cmd(
 @app.command("export-obsidian")
 def export_obsidian_cmd(
     topic: str = typer.Argument(help="Topic to export"),
+    limit: int = typer.Option(1500, "--limit", help="Max papers to export"),
     data_dir: str | None = typer.Option(None, "--data-dir", help="Data directory path"),
     vault_dir: str | None = typer.Option(None, "--vault-dir", help="Vault directory path"),
 ) -> None:
@@ -189,7 +190,7 @@ def export_obsidian_cmd(
     from knowcran.obsidian import export_obsidian
     from knowcran.storage import Storage
     storage = Storage(db_path=settings.db_path)
-    counts = export_obsidian(topic, storage=storage, vault_dir=settings.vault_dir)
+    counts = export_obsidian(topic, storage=storage, vault_dir=settings.vault_dir, limit=limit)
     console.print(f"[green]Exported: {counts['papers']} papers, {counts['claims']} claims, {counts['topics']} topic notes.[/green]")
 
 

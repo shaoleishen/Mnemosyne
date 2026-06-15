@@ -245,18 +245,18 @@ tags:
     return yaml + body
 
 
-def export_obsidian(topic: str, storage: Storage | None = None, vault_dir: Path = VAULT_DIR) -> dict[str, int]:
+def export_obsidian(topic: str, storage: Storage | None = None, vault_dir: Path = VAULT_DIR, limit: int = 1500) -> dict[str, int]:
     own = storage is None
     storage = storage or Storage()
     try:
         resolved_topic = storage.resolve_topic(topic)
 
         if storage.has_topic_papers(resolved_topic):
-            papers = storage.get_topic_papers(resolved_topic, limit=100)
+            papers = storage.get_topic_papers(resolved_topic, limit=limit)
         elif storage.has_topic_papers(topic):
-            papers = storage.get_topic_papers(topic, limit=100)
+            papers = storage.get_topic_papers(topic, limit=limit)
         else:
-            papers = storage.get_papers_by_topic(topic, limit=100)
+            papers = storage.get_papers_by_topic(topic, limit=limit)
         claims = storage.get_claims_by_topic(topic)
 
         papers_dir = vault_dir / "papers"

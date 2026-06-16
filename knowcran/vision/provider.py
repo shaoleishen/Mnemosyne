@@ -39,7 +39,7 @@ class VisionProvider:
         api_base: str,
         api_key: str,
         model: str,
-        timeout: float = 60.0,
+        timeout: float = 180.0,
     ):
         self.name = name
         self.api_base = api_base.rstrip("/")

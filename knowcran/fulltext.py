@@ -307,6 +307,15 @@ def _enrich_media_assets_with_vision(
         if not asset.image_path or not Path(asset.image_path).exists():
             continue
 
+        # Skip very small images (e.g. less than 5KB) which are usually empty crops or tiny artifacts
+        # that cause VLM prefill errors.
+        try:
+            if Path(asset.image_path).stat().st_size < 5120:
+                logger.info(f"Skipping VLM for {asset.media_id} - image file is too small ({Path(asset.image_path).stat().st_size} bytes)")
+                continue
+        except Exception:
+            pass
+
         try:
             result = vision_router.describe_media(
                 image_path=asset.image_path,
